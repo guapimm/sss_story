@@ -26,16 +26,58 @@ share_summaries = 0.25
 share_other = 0.15
 
 [scorecard]
-# 口径继承旧项目已验证算法（4-gram 在「去空白但保留标点」上切分），
-# 阈值重新标定（旧 dialogue_floor=0.12 过松）。P2 用 8 本书标定后回填。
-cross_chapter_overlap_max = 0.06   # 旧基线 p50=9.85%
-intra_redundancy_max = 0.10        # 旧基线 p50=6.21%
-dialogue_ratio_min = 0.25          # 旧值 0.12 过松
-cliche_hits_max = 5
-cross_window = 5
-ngram = 4                          # ⚠️ 口径固定：改了 baseline 即失效
-always_review_chapters = [1, 2, 3] # 黄金三章无条件 LLM 审（C-5）
-max_rewrites = 3                   # 超过则触发人工确认 C-7
+# ── 口径与阈值（P2 标定完成）──
+#
+# 口径**逐项继承**旧项目 `app/prose_style.py`（用书 23 的 47 章 baseline 反解对齐）。
+# 关键口径（改则 baseline 失效，新旧对比失去意义）：
+#   · 4-gram 在「去空白但**保留标点**」的文本上切分
+#     （去标点会让章内冗余率从 6.2% 掉到 4.2%）
+#   · 跨章重叠用**集合**而非词频（词频口径给 11.7%，baseline 是 9.85%）
+#   · 单章「前 K」用 Counter.most_common（并列取首次出现顺序）
+#
+# 复现验证：tests/golden/test_baseline_reproduction.py（26 项，含全量分位数比对）
+#
+# ── 双层阈值设计 ──
+# 单层阈值实测会让 47/47 章全部触发（闸门失效）。故分两层：
+#   hard_*   → 明确缺陷，任一命中即送 LLM 审校（少而准）
+#   target_* → 目标水位，只影响总分（逐期抬升）
+#
+# 标定依据（旧项目书 23 全 47 章实测分位数）：
+#   dialogue_ratio         p5=0.028 p25=0.073 p50=0.106 p75=0.132 p95=0.292
+#   cross_chapter_overlap  p5=0.059 p25=0.084 p50=0.099 p75=0.105 p95=0.119
+#   intra_redundancy       p5=0.039 p25=0.051 p50=0.062 p75=0.071 p95=0.098
+#   sentence_len_cv        p5=0.558 p25=0.612 p50=0.651 p75=0.671 p95=0.701
+#   chars                  p5=4149  p25=4609  p50=5065  p75=5433  p95=6520
+#
+# ⚠️ 这张表是「要超越的基线」，不是合格线 —— 书 23 正是用户抱怨的那一本。
+
+# hard 层：明确缺陷
+hard_cross_overlap = 0.15        # 旧 max = 0.145
+hard_intra_redundancy = 0.15     # 旧 max = 0.122
+hard_dialogue_floor = 0.05       # 旧 p5 = 0.028
+hard_cliche_hits = 8             # 旧 p95 = 2（套话本身不是硬伤）
+hard_simile_count = 6            # 旧 p95 = 1（用户痛点：比喻太多）
+hard_strong_emotion = 4          # 旧 writer 规则：每章 ≤2 次
+hard_sentence_cv_floor = 0.30    # 旧 p5 = 0.558
+hard_min_chars = 2500            # 旧 p5 = 4149
+hard_outline_adherence = 0.5
+
+# target 层：目标水位（参与总分）
+target_dialogue_ratio = 0.25     # 旧值 0.12 过松；旧 p50 仅 0.106
+target_cross_overlap = 0.06      # 旧 p50 = 0.099
+target_intra_redundancy = 0.08   # 旧 p50 = 0.062
+target_cliche_hits = 2
+target_simile_count = 3
+target_strong_emotion = 2
+target_sentence_cv = 0.50
+target_min_chars = 3500
+target_outline_adherence = 0.8
+
+# 总分阈值：47 章实测 score p50 = 0.700（仅字面层）
+score_threshold = 0.62
+
+# 黄金三章无条件送 LLM 审（D-14 C-5）
+always_review_chapters = [1, 2, 3]
 
 [structure_gate]
 # ⚠️ 必须 enabled。旧项目指标设计正确但 shadow=true，导致 400 章全挤第 1 卷。

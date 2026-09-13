@@ -523,6 +523,40 @@ class EndingPattern(StrEnum):
     OTHER = "other"
 
 
+class TriggerReason(StrEnum):
+    """打分卡触发 LLM 审校/重写的理由（决策 D-10）。
+
+    分三类：
+      · 无条件触发（黄金三章 / 卷末 / 高潮）—— D-14 的质量门禁
+      · hard 层阈值触发 —— 明确缺陷，少而准
+      · 总分触发（`LOW_SCORE`）—— target 层水位未达
+    """
+
+    # ── 无条件触发 ──
+    GOLDEN_THREE = "golden_three"          # 黄金三章（D-14 C-5）
+    VOLUME_END = "volume_end"              # 卷末章
+    CLIMAX_BOSS = "climax_boss"            # 高潮/Boss 章
+
+    # ── hard 层阈值触发 ──
+    CROSS_OVERLAP = "cross_overlap"        # 与近 N 章重复度过高
+    INTRA_REDUNDANCY = "intra_redundancy"  # 章内冗余过高
+    DIALOGUE_LOW = "dialogue_low"          # 对话占比过低
+    CLICHE_HEAVY = "cliche_heavy"          # 套话密集
+    SIMILE_HEAVY = "simile_heavy"          # 比喻过量
+    EMOTION_NAMING = "emotion_naming"      # 情绪直陈过多
+    SENTENCE_UNIFORM = "sentence_uniform"  # 句长过于均匀
+    OUTLINE_DEVIATION = "outline_deviation"  # 细纲未落实
+    HOOK_MISSED = "hook_missed"            # 章末未落在钩子
+    STATE_CONFLICT = "state_conflict"      # 状态矛盾
+    UNSUPPORTED_ENTITY = "unsupported_entity"  # 无依据新名词
+    ENDING_OMEN = "ending_omen"            # 假钩子（贴片式无主暗示）
+    BRIDGE_BREAK = "bridge_break"          # 章首时间硬切
+    TOO_SHORT = "too_short"                # 字数不足
+
+    # ── 总分触发 ──
+    LOW_SCORE = "low_score"
+
+
 __all__ = [
     "BookMode",
     "BookStatus",
@@ -554,4 +588,5 @@ __all__ = [
     "GateErrorCode",
     "LocationLevel",
     "EndingPattern",
+    "TriggerReason",
 ]

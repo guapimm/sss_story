@@ -60,10 +60,18 @@ class ModelCapability:
     cache_mode: CacheMode
     concurrency: int = 1
     default_reasoning_effort: str | None = None
+    #: 单价（USD / 1M token）—— 从配置读，**不在代码里硬编码模型名与价格**
+    pricing_cached_input: float = 0.0
+    pricing_input: float = 0.0
+    pricing_output: float = 0.0
 
     @property
     def can_cache(self) -> bool:
         return self.cache_mode != "none"
+
+    @property
+    def has_pricing(self) -> bool:
+        return self.pricing_input > 0 or self.pricing_output > 0
 
 
 @dataclass(frozen=True)
@@ -220,6 +228,7 @@ def _parse_capability(raw: dict[str, Any]) -> ModelCapability:
     ]
     if missing:
         raise ProviderConfigError(f"模型声明缺字段 {missing}：{raw.get('id', raw)}")
+    pricing = raw.get("pricing") or {}
     return ModelCapability(
         id=raw["id"],
         provider=raw["provider"],
@@ -232,6 +241,9 @@ def _parse_capability(raw: dict[str, Any]) -> ModelCapability:
         cache_mode=raw.get("cache_mode", "none"),
         concurrency=int(raw.get("concurrency", 1)),
         default_reasoning_effort=raw.get("default_reasoning_effort"),
+        pricing_cached_input=float(pricing.get("cached_input", 0.0)),
+        pricing_input=float(pricing.get("input", 0.0)),
+        pricing_output=float(pricing.get("output", 0.0)),
     )
 
 

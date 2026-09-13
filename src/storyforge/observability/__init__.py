@@ -15,6 +15,15 @@ from storyforge.observability.metering import (
     breakdown_to_json,
     hash_prompt_prefix,
 )
+from storyforge.observability.report import (
+    pricing_table,
+    FALLBACK_PRICING,
+    TokenReport,
+    build_report,
+    pricing_for,
+    record_to_row,
+    row_to_record,
+)
 
 __all__ = [
     "CONTEXT_SOURCES",
@@ -25,4 +34,11 @@ __all__ = [
     "UsageMetrics",
     "breakdown_to_json",
     "hash_prompt_prefix",
+    "pricing_table",
+    "FALLBACK_PRICING",
+    "TokenReport",
+    "build_report",
+    "pricing_for",
+    "record_to_row",
+    "row_to_record",
 ]

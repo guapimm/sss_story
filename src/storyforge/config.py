@@ -91,29 +91,58 @@ class MemorySettings(BaseModel):
 
 
 class ScorecardSettings(BaseModel):
-    """质量打分卡阈值（P2 标定后填入）。
+    """质量打分卡阈值（P2 已按旧项目真实分布标定）。
 
-    口径继承旧项目已用书 23 的 47 章 baseline 反解并对齐的算法，**但阈值重新标定**：
-    旧 `dialogue_floor = 0.12` 明显过松（Editor 反复批评"对话占比极低"而 12% 就合格）。
+    口径继承旧项目已用书 23 的 47 章 baseline 反解并对齐的算法，
+    **但阈值重新标定**：旧 `dialogue_floor = 0.12` 明显过松
+    （Editor 反复批评"对话占比极低"而 12% 就合格；旧基线 p50 = 0.106）。
+
+    ## 双层设计（关键）
+
+    单层阈值实测会让 **47/47 章全部触发**（书 23 的 dialogue p95 才 0.292）
+    → 闸门退化成"全部送审"，等于没有闸门。
+
+      · `hard_*`   —— 明确缺陷，任一命中即送 LLM 审校（少而准）
+      · `target_*` —— 目标水位，只影响总分（逐期抬升）
+
+    标定依据见 `config/settings.toml` 的注释与
+    `tests/golden/test_baseline_reproduction.py`。
     """
 
-    #: 跨章 4-gram 重叠上限（旧基线 p50 = 9.85%，max 14.5%）
-    cross_chapter_overlap_max: float = 0.06
-    #: 章内 4-gram 冗余上限（旧基线 p50 = 6.21%）
-    intra_redundancy_max: float = 0.10
-    #: 对话占比下限（旧值 0.12 过松，重标为 0.25）
-    dialogue_ratio_min: float = 0.25
-    #: 套话命中数上限
-    cliche_hits_max: int = 5
-    #: 跨章重叠回看窗口（章）
-    cross_window: int = 5
-    #: n-gram 长度（口径固定，不得随意改：改了口径 baseline 即失效）
-    ngram: int = 4
+    # ── hard 层（明确缺陷）──
+    hard_cross_overlap: float = 0.15
+    hard_intra_redundancy: float = 0.15
+    hard_dialogue_floor: float = 0.05
+    hard_cliche_hits: int = 8
+    hard_simile_count: int = 6
+    hard_strong_emotion: int = 4
+    hard_sentence_cv_floor: float = 0.30
+    hard_min_chars: int = 2500
+    hard_outline_adherence: float = 0.5
 
-    #: 无条件送 LLM 审校的章号（黄金三章）
+    # ── target 层（参与总分）──
+    target_dialogue_ratio: float = 0.25
+    target_cross_overlap: float = 0.06
+    target_intra_redundancy: float = 0.08
+    target_cliche_hits: int = 2
+    target_simile_count: int = 3
+    target_strong_emotion: int = 2
+    target_sentence_cv: float = 0.50
+    target_min_chars: int = 3500
+    target_outline_adherence: float = 0.8
+
+    # ── 总分与无条件送审 ──
+    score_threshold: float = 0.62
+    #: 黄金三章无条件 LLM 审（D-14 C-5）
     always_review_chapters: tuple[int, ...] = (1, 2, 3)
     #: 同一章重写次数上限，超过触发人工确认 C-7
     max_rewrites: int = 3
+
+    # ── 口径（不得随意改：改了 baseline 即失效）──
+    #: 跨章重叠的回看窗口（章）
+    cross_window: int = 5
+    #: n-gram 长度
+    ngram: int = 4
 
 
 class StructureGateSettings(BaseModel):

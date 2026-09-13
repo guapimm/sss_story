@@ -43,6 +43,10 @@ supports_reasoning = false
 reasoning_control = "none"
 cache_mode = "automatic_prefix"
 concurrency = 1
+# 单价（USD / 1M token）。⚠️ 必须按 provider 真实价目填写 ——
+# 旧项目只有一套 MiMo 权重却用在占 61% 流量的 deepseek 上（model-blind）。
+# DeepSeek 缓存命中/miss 实测 50×（flash）/ 30×（v4-pro）。
+pricing = { cached_input = 0.006, input = 0.30, output = 0.90 }
 
 [[models]]
 id = "deepseek-v4-pro"
@@ -56,6 +60,7 @@ reasoning_control = "effort"
 default_reasoning_effort = "low"   # 旧项目实测：不登记 reasoning_effort 会思考失控
 cache_mode = "automatic_prefix"
 concurrency = 1
+pricing = { cached_input = 0.01, input = 0.30, output = 1.20 }
 
 # --------------------------------------------------------------------------- #
 # 节点 → 能力需求（路由器据此选模型）
