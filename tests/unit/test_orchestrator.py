@@ -60,6 +60,36 @@ class RecordingExecutor:
             self.inflight[key] = self.inflight.get(key, 1) - 1
 
 
+class OverlapTrackingExecutor(RecordingExecutor):
+    """记录每个阶段的「进入/退出」时间区间，用于**结构性**判定并行。
+
+    为什么不测总耗时：机器繁忙时并行与串行的耗时差异会被压缩，造成假失败。
+    测区间重叠则不受负载影响。
+    """
+
+    def __init__(self, *, delay: float = 0.01) -> None:
+        super().__init__(delay=delay)
+        #: {阶段: [(进入时刻, 退出时刻), ...]}
+        self.spans: dict[str, list[tuple[float, float]]] = {}
+
+    async def run(self, item: WorkItem) -> str:
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        try:
+            return await super().run(item)
+        finally:
+            t1 = loop.time()
+            self.spans.setdefault(item.stage.value, []).append((t0, t1))
+
+    def has_overlap(self, stage_a: str, stage_b: str) -> bool:
+        """两个阶段的任意两次执行是否有时间重叠。"""
+        for a0, a1 in self.spans.get(stage_a, []):
+            for b0, b1 in self.spans.get(stage_b, []):
+                if a0 < b1 and b0 < a1:
+                    return True
+        return False
+
+
 def make_items(
     stage: PipelineStage, count: int, *, volume: int | None = 1
 ) -> list[WorkItem]:
@@ -125,29 +155,36 @@ async def test_invariant1_holds_under_multiple_stages() -> None:
 
 
 async def test_invariant2_stages_run_in_parallel() -> None:
-    """阶段间并行：细纲与骨架必须能同时推进（总耗时 < 串行耗时之和）。"""
-    delay = 0.03
-    n = 5
-    ex = RecordingExecutor(delay=delay)
+    """阶段间并行：细纲与骨架必须能**同时推进**。
+
+    ## 判定方式（为什么不测耗时）
+
+    初版用「总耗时 < 串行耗时之和」判定，实测在**全量测试套件的负载下会抖动**
+    —— 机器繁忙时两阶段并行的总耗时可能接近串行值，造成假失败（已验证：单独跑 5/5 通过，
+    全量跑偶发失败）。
+
+    改为**测并发重叠**：让哑执行器记录「进入/退出」时间戳，
+    只要两个阶段的执行区间有重叠，就证明它们真的在并行。
+    这是**结构性判定**，不受机器负载影响。
+    """
+    ex = OverlapTrackingExecutor(delay=0.05)
     orch = Orchestrator(ex)
 
+    n = 4
     for it in make_items(PipelineStage.SKELETON, n):
         orch.enqueue(it)
     for it in make_items(PipelineStage.DETAIL, n):
         orch.enqueue(it)
     orch.close_all()
 
-    start = asyncio.get_event_loop().time()
     await orch.run()
-    elapsed = asyncio.get_event_loop().time() - start
 
-    serial_cost = 2 * n * delay
-    # 并行时总耗时应接近单阶段耗时（n*delay），显著小于两阶段串行之和
-    assert elapsed < serial_cost * 0.75, (
-        f"两阶段未并行：耗时 {elapsed:.3f}s，串行应为 {serial_cost:.3f}s"
+    assert len(ex.completed) == 2 * n, "两阶段的单元都应执行完"
+    # ★ 结构性断言：两阶段的执行区间必须重叠
+    assert ex.has_overlap("skeleton", "detail"), (
+        f"两阶段未并行：skeleton 区间={ex.spans.get('skeleton')}，"
+        f"detail 区间={ex.spans.get('detail')}"
     )
-    # 两个阶段确实有重叠（各自都跑满）
-    assert len(ex.completed) == 2 * n
 
 
 # --------------------------------------------------------------------------- #

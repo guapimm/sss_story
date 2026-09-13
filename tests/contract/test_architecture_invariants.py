@@ -604,20 +604,32 @@ def test_rule19_no_prose_in_graph_state(src_root: Path) -> None:
 
     防的是 LangGraph checkpoint 膨胀（官方 200 轮 **5.3 GB** / 社区 1.24 GB）。
     State 只能持 `*_ref` 引用。
+
+    ## 判定口径
+
+    只看**文本类型**的字段。整数/计数类（`prose_chars`、`prose_hash`）
+    **是允许的** —— 它们是小标量，不造成膨胀，且对观测有用。
+    （初版把 `prose_chars` 误判为违规，是规则本身太宽。）
     """
     state_file = src_root / "graph" / "state.py"
     if not state_file.exists():
         pytest.skip("graph/state.py 尚未创建")
     tree = _parse(state_file)
+    banned = ("prose", "chapter_content", "plan_json", "bible_text", "content")
     offenders: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             name = node.target.id
-            if name.endswith(("_ref", "_hash", "_id")):
+            if name.endswith(("_ref", "_hash", "_chars", "_len", "_id", "_no")):
                 continue
-            if re.search(r"(prose|chapter_content|plan_json|bible_text)", name):
-                offenders.append(f"line {node.lineno}: {name}")
-    assert not offenders, f"State 不得含正文字段：{offenders}"
+            ann = ast.unparse(node.annotation).lower()
+            # 仅当字段可能是大文本时才算违规
+            is_texty = "str" in ann or "dict" in ann or "any" in ann
+            if is_texty and any(b in name for b in banned):
+                offenders.append(f"line {node.lineno}: {name}: {ann}")
+    assert not offenders, (
+        f"State 不得含正文/大文本字段（应用 *_ref 引用）：{offenders}"
+    )
 
 
 def test_rule20_no_langsmith_hard_requirement(src_root: Path) -> None:

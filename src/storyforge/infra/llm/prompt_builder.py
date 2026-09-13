@@ -45,11 +45,22 @@ from typing import Any
 from storyforge.infra.llm.capability import CacheMode, ModelCapability
 
 #: 匹配易变特征的正则 —— 用于契约测试断言"稳定层里没有易变内容"
+#:
+#: ⚠️ `stable` 层禁止**全部**这些特征（必须逐字节不变）；
+#: `semi` 层允许「卷号」（它在卷内是常量），但禁止逐章变化的特征。
 _VOLATILE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("时间戳", re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")),
     ("ISO时区", re.compile(r"\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}")),
     ("章号", re.compile(r"第\s*\d+\s*章")),
     ("卷号", re.compile(r"第\s*\d+\s*卷")),
+    ("字数参数", re.compile(r"字数\s*[:：]?\s*\d+|约\s*\d+\s*字|\d+\s*[~～-]\s*\d+\s*字")),
+    ("UUID", re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}")),
+)
+
+#: `semi` 层禁止的特征 —— 只排除**逐章**变化项（卷号不在其中）
+_SEMI_FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("时间戳", re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")),
+    ("章号", re.compile(r"第\s*\d+\s*章")),
     ("字数参数", re.compile(r"字数\s*[:：]?\s*\d+|约\s*\d+\s*字|\d+\s*[~～-]\s*\d+\s*字")),
     ("UUID", re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}")),
 )
@@ -96,16 +107,41 @@ class PromptLayers:
         这是把「缓存命中率」从"事后统计"变成"事前保证"的关键：
         旧项目命中率卡在 33~44% 且没人知道为什么，因为没有任何机制
         阻止易变内容进入稳定位置。
+
+        ## 两层的标准**不同**（重要）
+
+        | 层 | 允许 | 理由 |
+        |---|---|---|
+        | `stable` | 全书/全卷不变 | 命中缓存的前提是**逐字节相同** |
+        | `semi`   | 卷号、段号**允许** | semi 按卷/段变化，卷号在**卷内**是常量，不破坏段内缓存 |
+
+        因此：
+          · `stable` 禁止**任何**易变特征（含卷号、章号、字数、时间戳）
+          · `semi` 只禁止**逐章**变化的特征（章号、字数、时间戳），
+            但**允许卷号** —— 它是这一层存在的意义
         """
         violations: list[str] = []
-        for chunk in list(self.stable) + list(self.semi):
+
+        # stable：禁止一切易变特征
+        for chunk in self.stable:
             for label, pattern in _VOLATILE_PATTERNS:
                 m = pattern.search(chunk.text)
                 if m:
                     violations.append(
-                        f"[{chunk.source}] 含易变内容「{label}」：{m.group(0)!r} "
-                        f"—— 会破坏缓存前缀（旧项目命中率只有 44% 的原因之一）"
+                        f"[stable:{chunk.source}] 含易变内容「{label}」：{m.group(0)!r} "
+                        f"—— 稳定层必须逐字节不变（旧项目命中率只有 44% 的原因之一）"
                     )
+
+        # semi：允许卷号，但禁止逐章变化的特征
+        for chunk in self.semi:
+            for label, pattern in _SEMI_FORBIDDEN_PATTERNS:
+                m = pattern.search(chunk.text)
+                if m:
+                    violations.append(
+                        f"[semi:{chunk.source}] 含逐章变化内容「{label}」：{m.group(0)!r} "
+                        f"—— 准稳定层只允许按卷/段变化（卷号是允许的）"
+                    )
+
         if violations and strict:
             raise PromptLayerError(
                 "稳定层/准稳定层被易变内容污染：\n  " + "\n  ".join(violations)
