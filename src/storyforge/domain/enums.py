@@ -288,8 +288,11 @@ class RelationKind(StrEnum):
     ALLY = "盟友"
     RIVAL = "对手"
     ENEMY = "敌对"
+    NEMESIS = "仇敌"
     SUBORDINATE = "上下级"
     # 人物 — 势力
+    #: 同门由「归属同一势力」+ 该关系表达（比裸"同门"更可聚合）
+    SAME_SECT = "同门"
     MEMBER = "归属"
     LOYAL = "效忠"
     DEFECTED = "叛变"
