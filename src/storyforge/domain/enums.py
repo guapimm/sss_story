@@ -463,6 +463,63 @@ class HealthAction(StrEnum):
     MADE_PERMANENT = "made_permanent"
 
 
+class GateErrorCode(StrEnum):
+    """结构闸门失败分类。
+
+    ★ 必须分类的原因：旧项目实测**禁止全量重写结构 JSON**
+      —— 大输出必被模型截断（book23/25 两次 ROLLED_BACK 的根因）。
+      修复必须按 error_code 生成**增量补缺**的小 prompt。
+
+    （`docs/AGENTS.md`：补丁按 `arcs`/`beats`/`capacity`/`milestones`/
+      `factions`/`characters`/`volumes` 分类，各自小 prompt。）
+    """
+
+    VOLUME_COUNT = "volumes"
+    CHAPTER_DISTRIBUTION = "chapter_distribution"
+    NEW_LOCATIONS = "new_locations"
+    NEW_FACTIONS = "new_factions"
+    ANTAGONIST_VARIETY = "antagonist"
+    ESCALATION_QUALITY = "escalation"
+    MILESTONE_DENSITY = "milestones"
+    LOCATION_REUSE = "location_reuse"
+    OLD_MAP_CLOSURE = "old_map_closure"
+
+
+class LocationLevel(StrEnum):
+    """地点层级（解决旧项目的字符串碎片化）。
+
+    旧项目书 23 的地点被拆成 **40+ 个字符串变体**
+    （`长明楼三层值班室` / `长明楼三楼档案科资料室` / `长明楼三层走廊` /
+      `长明楼三层值班室门外`），且 **77 次 location 为空**。
+    """
+
+    WORLD = "world"
+    COUNTRY = "country"
+    REGION = "region"
+    CITY = "city"
+    BUILDING = "building"
+    FLOOR = "floor"
+    ROOM = "room"
+
+
+class EndingPattern(StrEnum):
+    """章末类型（打分卡用）。
+
+    旧项目实测书 23 的分布：`mid_action 23 / other 21 / omen 2 / dialogue 1 /
+    summary 0 / time_skip 0` —— 注意 `summary` 与 `time_skip` 为 0，
+    说明旧项目「不要总结式结尾」的规则**确实生效了**
+    （所以 `02-根因与架构对策` 的「不要做」清单里有
+      「不要把总结式结尾当硬伤」）。
+    """
+
+    MID_ACTION = "mid_action"
+    DIALOGUE = "dialogue"
+    OMEN = "omen"
+    SUMMARY = "summary"
+    TIME_SKIP = "time_skip"
+    OTHER = "other"
+
+
 __all__ = [
     "BookMode",
     "BookStatus",
@@ -491,4 +548,7 @@ __all__ = [
     "MANDATORY_CONFIRMS",
     "CONDITIONAL_CONFIRMS",
     "HealthAction",
+    "GateErrorCode",
+    "LocationLevel",
+    "EndingPattern",
 ]
