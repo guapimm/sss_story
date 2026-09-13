@@ -69,7 +69,19 @@ class BibleOut(BaseModel):
 
 
 class MilestoneOut(BaseModel):
-    chapter_no: int = Field(description="里程碑所在的全书章号（从 1 开始递增）")
+    """卷内里程碑。
+
+    ⚠️ `chapter_no` 是**本卷内**的章序号（从 1 开始），不是全书号。
+
+    为什么：模型不知道各卷的全局偏移（那是代码按各卷 chapter_count 累加出来的），
+    让它自己累加必然出错 —— 一旦第一卷的章数估偏，后续所有里程碑整体偏移。
+    这与决策 D-15「派生不存储」同一原则：**模型给局部，代码算全局**。
+    """
+
+    chapter_no: int = Field(
+        description="里程碑在**本卷内**的章序号（从 1 开始，不超过本卷 chapter_count）。"
+        "给卷内序号即可，全书号由系统自动换算"
+    )
     key: str = Field(description="里程碑标识")
     description: str = Field(default="", description="里程碑内容一句话")
 
