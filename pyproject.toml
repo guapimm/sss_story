@@ -1,0 +1,68 @@
+[project]
+name = "storyforge"
+version = "0.1.0"
+description = "Long-form novel generation system built on LangChain + LangGraph"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+
+# ── 依赖锁定策略（doc/06-风险与开放问题.md R-01）──
+# 精确锁定，不用 ^ / ~；LangGraph patch 级也有破坏性变更（3 个一手反例）。
+# ⚠️ 绝不 pin langgraph 1.0.x / 1.1.x：对 langchain-core 无上界，且与 checkpoint 4.x 互斥。
+dependencies = [
+    "langgraph==1.2.11",
+    "langchain==1.4.0",
+    "langchain-core==1.6.3",
+    "langgraph-checkpoint==4.2.0",
+    "langgraph-checkpoint-sqlite==3.1.1",
+    "langchain-openai==1.6.2",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.15.0",
+    "sqlalchemy==2.0.52",
+    "httpx>=0.28",
+    "tomli-w==1.2.0",
+]
+
+# 不引入（调研结论）：
+#   langchain-classic / langchain-community  → 已 sunset
+#   langgraph-supervisor                      → 已停止维护
+#   langsmith                                 → 一期不接 SaaS（无 LANGSMITH_* 时系统须完全可用）
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.2",
+    "pytest-asyncio==1.2.0",
+]
+
+[project.scripts]
+storyforge = "storyforge.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/storyforge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+# ⚠️ --basetemp 是必需的：本机 `C:\Users\<user>\AppData\Local\Temp\pytest-of-<user>`
+#    存在权限问题（PermissionError [WinError 5]），会让带 tmp_path 的夹具直接报错。
+#    这是本机既有环境问题，不是测试失败（旧项目 AGENTS.md 亦记载同一现象）。
+addopts = "-q --strict-markers --basetemp=.pytest_tmp"
+asyncio_mode = "auto"
+markers = [
+    "contract: architecture invariant checks (AST-based)",
+    "unit: pure logic, no LLM, no DB",
+    "integration: requires LLM or DB",
+    "live: calls real LLM (excluded by default)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]

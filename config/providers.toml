@@ -1,0 +1,113 @@
+# LLM 提供方与模型能力声明（决策 D-09：能力声明式路由，不绑定厂商）
+#
+# 设计原则：
+#   1. 节点声明「能力需求」，路由器按能力匹配模型 —— 代码中禁止出现 `model == "xxx"`。
+#   2. 能力字段决定调用策略（是否给 thinking 留预算、缓存怎么用、能否并行）。
+#   3. 旧项目实测教训：同一套 prompt 下 mimo-v2.5 空输出 0%，qwen3.8-flash 达 91.4%
+#      → 「思考预算」策略必须由能力驱动，不能硬编码假设。
+#
+# ⚠️ API Key 一律走环境变量（api_key_env），**绝不明文入库**。
+#    旧项目 backend/free_pool.json 含明文 Key 且全仓零读者 —— 不得重演。
+
+default_provider = "deepseek"
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+# 走 langchain-openai 的 ChatOpenAI（OpenAI 兼容）。
+# ⚠️ DeepSeek 的 reasoning_content 是非标字段；若需读取 reasoning 用量，
+#    应在客户端显式解析，不要指望标准 usage 字段。（调研 R-03g）
+
+[providers.openai_compatible]
+base_url = ""                  # 由用户填写（本地 vLLM / Ollama / 中转站等）
+api_key_env = "OPENAI_COMPAT_API_KEY"
+
+# --------------------------------------------------------------------------- #
+# 模型能力表
+# --------------------------------------------------------------------------- #
+# reasoning_control 取值：
+#   "none"   —— 不思考（抽取类任务首选，旧项目 entity_classify 空输出 100% 的教训）
+#   "effort" —— 支持 reasoning_effort 档位
+#   "budget" —— 支持显式 token 预算
+# cache_mode 取值：
+#   "none" | "automatic_prefix"（自动前缀缓存，如 DeepSeek）| "explicit_control"（如 Anthropic）
+
+[[models]]
+id = "deepseek-flash"
+provider = "deepseek"
+tier = "fast"                  # 档位标签：fast / balanced / premium
+context_window = 128000
+max_output_tokens = 8192
+supports_structured_output = true
+supports_reasoning = false
+reasoning_control = "none"
+cache_mode = "automatic_prefix"
+concurrency = 1
+
+[[models]]
+id = "deepseek-v4-pro"
+provider = "deepseek"
+tier = "balanced"
+context_window = 128000
+max_output_tokens = 16384
+supports_structured_output = true
+supports_reasoning = true
+reasoning_control = "effort"
+default_reasoning_effort = "low"   # 旧项目实测：不登记 reasoning_effort 会思考失控
+cache_mode = "automatic_prefix"
+concurrency = 1
+
+# --------------------------------------------------------------------------- #
+# 节点 → 能力需求（路由器据此选模型）
+# --------------------------------------------------------------------------- #
+# 关键：抽取类节点**显式要求不思考**。
+# 旧项目 entity_classify 空输出 100%（32/32）、verifier 62.3%，reasoning 占 completion 99.4%
+# —— 抽取是模式匹配任务，长思考只会烧预算并把输出挤没。
+
+[nodes.chapter_writer]
+tier = "balanced"
+requires = { supports_structured_output = false, needs_long_output = true }
+thinking = "allowed"           # 正文质量优先；但有输出预算下限保护
+
+[nodes.volume_planner]
+tier = "balanced"
+requires = { supports_structured_output = true }
+thinking = "allowed"
+
+[nodes.skeleton_planner]
+tier = "balanced"
+requires = { supports_structured_output = true }
+thinking = "allowed"
+
+[nodes.detail_planner]
+tier = "balanced"
+requires = { supports_structured_output = true }
+thinking = "allowed"
+
+[nodes.scene_extractor]
+tier = "fast"
+requires = { supports_structured_output = true }
+thinking = "forbidden"         # ★ 抽取不做长思考
+
+[nodes.entity_resolver]
+tier = "fast"
+requires = { supports_structured_output = true }
+thinking = "forbidden"
+
+[nodes.relation_extractor]
+tier = "fast"
+requires = { supports_structured_output = true }
+thinking = "forbidden"
+
+[nodes.style_critic]
+tier = "balanced"
+requires = { supports_structured_output = true }
+thinking = "allowed"
+
+[nodes.targeted_reviser]
+tier = "balanced"
+requires = { supports_structured_output = false }
+thinking = "allowed"
+
+# 以下为**零 LLM** 节点，仅登记以示不存在模型依赖（防误加 LLM 调用）
+# scorecard_engine / health_scheduler / continuity_checker / structure_gate

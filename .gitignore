@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+
+# 测试
+.pytest_cache/
+.pytest_tmp/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# 运行数据（不入库）
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# ⚠️ 密钥绝不入库
+# 旧项目教训：backend/free_pool.json 含明文 API Key 且全仓零读者；
+#           .gitignore 自承历史上有 13 个 llm_providers.json.bak_* "裸奔"过。
+.env
+.env.*
+!.env.example
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 临时文件
+.tmp_*
+*.tmp
+*.bak
+*.log

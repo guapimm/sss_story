@@ -1,0 +1,62 @@
+# 全局配置 —— 唯一入口（决策 D-02）
+#
+# 环境变量覆盖：STORYFORGE_<SECTION>__<KEY>
+#   例：STORYFORGE_LLM__MAX_ATTEMPTS=5
+# 未列出的键会因 extra="forbid" 直接报错（防拼错静默忽略）。
+
+app_name = "storyforge"
+mode = "story"                 # 一期只做 story（D-08）；learn 预留接口
+
+[llm]
+default_timeout_s = 300.0
+max_attempts = 3
+stream_idle_min_s = 20.0       # 流式空闲超时下限（防卡死，旧项目书17/18 根因）
+stream_idle_max_s = 60.0
+min_output_tokens = 1024       # 输出预算下限：保证正文不被思考挤没
+
+[memory]
+# 记忆预算随篇幅增长（对策⑨）。旧项目恒定 12000 字 →
+# 密度从第 50 章 4.8% 衰减到第 1500 章 0.16%，模型只能原地描摹凑字数。
+base_budget_chars = 12000
+growth_factor = 0.5
+share_timeline = 0.20
+share_states = 0.25
+share_rag = 0.15
+share_summaries = 0.25
+share_other = 0.15
+
+[scorecard]
+# 口径继承旧项目已验证算法（4-gram 在「去空白但保留标点」上切分），
+# 阈值重新标定（旧 dialogue_floor=0.12 过松）。P2 用 8 本书标定后回填。
+cross_chapter_overlap_max = 0.06   # 旧基线 p50=9.85%
+intra_redundancy_max = 0.10        # 旧基线 p50=6.21%
+dialogue_ratio_min = 0.25          # 旧值 0.12 过松
+cliche_hits_max = 5
+cross_window = 5
+ngram = 4                          # ⚠️ 口径固定：改了 baseline 即失效
+always_review_chapters = [1, 2, 3] # 黄金三章无条件 LLM 审（C-5）
+max_rewrites = 3                   # 超过则触发人工确认 C-7
+
+[structure_gate]
+# ⚠️ 必须 enabled。旧项目指标设计正确但 shadow=true，导致 400 章全挤第 1 卷。
+enabled = true
+new_locations_per_volume_min = 2
+new_factions_per_volume_min = 2
+milestone_max_gap = 25
+location_reuse_ratio_max = 0.5
+chapters_per_volume_min = 150
+chapters_per_volume_max = 250
+repair_attempts = 5
+
+[pipeline]
+# 三级流水线（D-13）：骨架 → 细纲 → 正文，阶段间并行 / 阶段内串行
+skeleton_batch_size = 50
+detail_batch_size = 15
+chapter_lead_limit = 3         # 正文最多领先细纲 3 章
+gate_poll_interval_s = 2.0
+gate_timeout_s = 3600.0
+
+[observability]
+persist_calls = true
+telemetry_ttl_days = 90        # 旧项目遥测无 TTL → 占全库 54%
+blank_rate_alert = 0.03        # 旧项目实测 22.2%
