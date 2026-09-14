@@ -328,6 +328,241 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# plan（规划链路：圣经 → 全卷台阶 → 骨架 → 细纲）
+# --------------------------------------------------------------------------- #
+
+
+def _make_client() -> Any:
+    """构造接真实模型的 LLMClient（LangChain 传输层）。
+
+    ★ 这是"基于 langchain"的落地处：`LLMClient` 的 `transport` 走
+    `ChatOpenAI`。缺 API key 时**显式报错**（不静默空跑）。
+    """
+    from storyforge.infra.llm.client import ClientConfig, LLMClient
+    from storyforge.infra.llm.transport import make_transport
+
+    s = get_settings()
+    return LLMClient(
+        make_transport(),
+        config=ClientConfig(
+            max_attempts=s.llm.max_attempts,
+            timeout_s=s.llm.default_timeout_s,
+        ),
+    )
+
+
+def _artifacts():
+    from storyforge.infra.storage.artifacts import ArtifactStore
+
+    return ArtifactStore.from_settings()
+
+
+def _guard_api_key() -> int | None:
+    """缺 key 时给出明确指引（返回退出码），否则 `None`。"""
+    from storyforge.infra.llm.capability import load_registry
+
+    reg = load_registry()
+    missing = [
+        p for p in reg.providers.values()
+        if p.api_key_env and not p.resolve_api_key()
+    ]
+    if missing and len(missing) == len(reg.providers):
+        print("未配置任何 API key。请设置环境变量后再运行，例如：", file=sys.stderr)
+        for p in missing:
+            print(f"  $env:{p.api_key_env} = \"sk-...\"", file=sys.stderr)
+        print("\n（也可运行 `storyforge doctor` 查看配置状态）", file=sys.stderr)
+        return 2
+    return None
+
+
+async def _run_plan(args: argparse.Namespace) -> int:
+    from storyforge.graph.graphs.books import GraphDeps, thread_config
+    from storyforge.graph.graphs.books import (
+        build_bible_graph,
+        build_detail_batch_graph,
+        build_skeleton_graph,
+        build_volume_plan_graph,
+    )
+
+    store = _artifacts()
+    client = _make_client()
+    deps = GraphDeps(client=client, store=store)
+    s = get_settings()
+
+    book_id = args.book_id
+
+    # ── ① 圣经 ──
+    print(f"[1/4] 生成世界观圣经（book {book_id}）…")
+    out = await build_bible_graph(deps).ainvoke(
+        {"book_id": book_id, "topic": args.topic, "genre": args.genre, "refs": {}},
+        thread_config(f"b{book_id}:bible"),
+    )
+    if not out.get("ok"):
+        print(f"圣经生成失败：{out.get('violations')}", file=sys.stderr)
+        return 1
+    bible_ref = out["refs"]["bible_ref"]
+    print(f"      → {bible_ref}")
+
+    # ── ② 全卷台阶 ──
+    print(f"[2/4] 规划全部卷的升级台阶（目标 {args.chapters} 章）…")
+    out = await build_volume_plan_graph(deps).ainvoke(
+        {
+            "book_id": book_id, "topic": args.topic, "genre": args.genre,
+            "target_chapters": args.chapters,
+            "refs": {"bible_ref": bible_ref},
+        },
+        thread_config(f"b{book_id}:volume_plan"),
+    )
+    if not out.get("gate_ok"):
+        print(f"结构闸门未通过：{out.get('gate_issues')}", file=sys.stderr)
+        print("（台阶必须一次定稿全部卷 —— 旧项目只细化第 1 卷 → 400 章挤第 1 卷）",
+              file=sys.stderr)
+        return 1
+    print(f"      → {out['series_plan_ref']}（{out['total_volumes']} 卷，"
+          f"修复轮次 {out['repair_round']}）")
+
+    # ── ③ 骨架（本卷） ──
+    print(f"[3/4] 生成本卷骨架（第 {args.volume} 卷）…")
+    out = await build_skeleton_graph(deps).ainvoke(
+        {"book_id": book_id, "current_volume": args.volume, "batch_no": 1,
+         "refs": {"bible_ref": bible_ref}},
+        thread_config(f"b{book_id}:skeleton:v{args.volume}"),
+    )
+    if out.get("violations"):
+        print(f"骨架未通过校验：{out['violations']}", file=sys.stderr)
+        return 1
+    print(f"      → {out['skeleton_ref']}")
+
+    # ── ④ 细纲（首批） ──
+    batch = s.pipeline.detail_batch_size
+    end = min(args.chapters, batch)
+    print(f"[4/4] 生成本卷细纲（第 1~{end} 章，含伤势节拍注入）…")
+    out = await build_detail_batch_graph(deps).ainvoke(
+        {"book_id": book_id, "current_volume": args.volume,
+         "batch_start": 1, "batch_end": end,
+         "refs": {"bible_ref": bible_ref}},
+        thread_config(f"b{book_id}:detail:v{args.volume}:1-{end}"),
+    )
+    if out.get("lint_issues"):
+        print("细纲未通过 lint：", file=sys.stderr)
+        for i in out["lint_issues"][:20]:
+            print(f"  - {i}", file=sys.stderr)
+        return 1
+    print(f"      → {len(out['detail_refs'])} 章细纲已落盘，"
+          f"注入伤势节拍 {out['health_beats_injected']} 条")
+    if out.get("awaiting_confirm"):
+        print(f"\n⚠️  到达人工确认点：{out['awaiting_confirm']}")
+        print("   请审阅产物后再继续（`storyforge write`）。")
+
+    print("\n规划完成。下一步：")
+    print(f"  uv run storyforge write --book-id {book_id} --chapters {end}")
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    import asyncio
+
+    rc = _guard_api_key()
+    if rc is not None:
+        return rc
+    return asyncio.run(_run_plan(args))
+
+
+# --------------------------------------------------------------------------- #
+# write（单章闭环）
+# --------------------------------------------------------------------------- #
+
+
+async def _run_write(args: argparse.Namespace) -> int:
+    from storyforge.graph.graphs.chapter import ChapterDeps, build_chapter_graph
+    from storyforge.graph.graphs.books import thread_config
+
+    store = _artifacts()
+    client = _make_client()
+    deps = ChapterDeps(client=client, store=store)
+    graph = build_chapter_graph(deps)
+
+    bible_ref = f"books/{args.book_id}/bible.md"
+    if not store.exists(bible_ref):
+        print(f"缺少世界观圣经：{bible_ref}（请先运行 `storyforge plan`）",
+              file=sys.stderr)
+        return 2
+
+    done = 0
+    for no in range(args.start, args.start + args.chapters):
+        try:
+            store.read_text(f"books/{args.book_id}/plans/{no:05d}.json")
+        except Exception:  # noqa: BLE001
+            print(f"第{no}章细纲不存在，停止（请先运行 `storyforge plan`）",
+                  file=sys.stderr)
+            break
+
+        print(f"第{no}章 …", end=" ", flush=True)
+        out = await graph.ainvoke(
+            {
+                "book_id": args.book_id, "global_no": no, "volume_no": args.volume,
+                "detail_ready_through": no,
+                "refs": {"bible_ref": bible_ref},
+                "is_volume_end": False,
+            },
+            thread_config(f"b{args.book_id}:chapter:{no}"),
+        )
+        status = out.get("status", "?")
+        if status == "committed":
+            print(f"OK  {out.get('prose_chars')} 字"
+                  f"{'（已修订）' if out.get('revision_applied') else ''}")
+            done += 1
+        else:
+            print(f"未完成：{status} {out.get('error', '')}")
+            if status in ("write_failed", "blocked"):
+                break
+
+    print(f"\n完成 {done} 章。")
+    if client.records:
+        blank = client.blank_rate()
+        print(f"LLM 调用 {len(client.records)} 次，空输出率 {blank:.1%}"
+              f"（旧项目实测 22.2%）")
+    return 0
+
+
+def cmd_write(args: argparse.Namespace) -> int:
+    import asyncio
+
+    rc = _guard_api_key()
+    if rc is not None:
+        return rc
+    return asyncio.run(_run_write(args))
+
+
+# --------------------------------------------------------------------------- #
+# report（Token 与成本报告）
+# --------------------------------------------------------------------------- #
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """打印模型单价与成本结构（对策⑦）。
+
+    旧项目对照：命中 44% 但缓存命中只占成本 **0.35%**，输出占 **77.5%**
+    —— 优化重点应在输出侧，而旧项目一直在调缓存。
+    """
+    from storyforge.observability.report import pricing_table
+
+    table = pricing_table()
+    if not table:
+        print("未读到任何模型单价（检查 config/providers.toml 的 pricing）",
+              file=sys.stderr)
+        return 1
+    print("模型单价（USD / 1M token），来源：config/providers.toml")
+    print(f"{'模型':<22}{'输入':>8}{'缓存命中':>10}{'输出':>8}")
+    for model_id, p in table.items():
+        print(f"{model_id:<22}{p.input:>8}{p.cached_input:>10}{p.output:>8}")
+    print()
+    print("提示：旧项目实测成本结构为 缓存 0.35% / 输出 77.5% / 输入 22.2%，")
+    print("      因此优化重点在**输出侧**（空输出率、思考预算），而非缓存命中率。")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # 入口
 # --------------------------------------------------------------------------- #
 
@@ -357,6 +592,26 @@ def build_parser() -> argparse.ArgumentParser:
     bl.add_argument("--dir", required=True, help="旧项目章节目录")
     bl.add_argument("--pattern", default="v1-*.txt", help="文件名通配")
     bl.set_defaults(func=cmd_baseline)
+
+    pn = sub.add_parser(
+        "plan", help="规划链路：圣经 → 全卷台阶 → 骨架 → 细纲（需 API key）"
+    )
+    pn.add_argument("--book-id", type=int, required=True)
+    pn.add_argument("--topic", required=True, help="主题")
+    pn.add_argument("--genre", default="suspense", help="题材（默认 suspense）")
+    pn.add_argument("--chapters", type=int, default=25, help="目标章数（默认 25）")
+    pn.add_argument("--volume", type=int, default=1, help="先做第几卷（默认 1）")
+    pn.set_defaults(func=cmd_plan)
+
+    w = sub.add_parser("write", help="单章闭环：写作 → 打分 → 审校 → 抽取（需 API key）")
+    w.add_argument("--book-id", type=int, required=True)
+    w.add_argument("--start", type=int, default=1, help="起始章号（默认 1）")
+    w.add_argument("--chapters", type=int, default=1, help="写几章（默认 1）")
+    w.add_argument("--volume", type=int, default=1)
+    w.set_defaults(func=cmd_write)
+
+    rp = sub.add_parser("report", help="Token 与成本报告")
+    rp.set_defaults(func=cmd_report)
 
     return p
 
