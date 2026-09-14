@@ -89,12 +89,24 @@ class WorldStateSnapshot:
     known_facts: dict[int, list[str]] = field(default_factory=dict)
     #: 未收束事件（章末钩子的结构化形式）
     open_thread: str = ""
+    #: ★ 地点**名**（细纲阶段的表示形式）。
+    #:
+    #: 为什么需要它：细纲在**实体抽取之前**生成 —— 此时 `location_entity_id`
+    #: 还不存在。若强行要求 ID，细纲就只能二选一：留空（旧项目实测
+    #: `entry_state` 填充率 13%）或由模型瞎编 ID（口径漂移）。
+    #: 因此细纲用**名**表达，抽取落地后再由解析器替换为 ID；
+    #: 两者同时存在时以 ID 为准。
+    location_name: str = ""
+    #: ★ 在场人物**名**（同上，细纲阶段用）
+    present_names: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return (
             self.location_entity_id is None
+            and not self.location_name
             and not self.story_time
             and not self.present_entity_ids
+            and not self.present_names
             and not self.known_facts
             and not self.open_thread
         )
@@ -104,6 +116,9 @@ class WorldStateSnapshot:
 
         旧项目 `outline_lint.py:121-125` 只能做 `exit_state != entry_state`
         的**字符串比对**，无法给出"哪里不一致"。
+
+        地点比对**优先用 ID**；细纲阶段（尚无 ID）回退到名字比对 ——
+        名字比对能抓出「本章结束在长明楼 / 下一章开始在镇公所」这类跳变。
         """
         problems: list[str] = []
         if (
@@ -114,6 +129,16 @@ class WorldStateSnapshot:
             problems.append(
                 f"地点跳变：本章结束于实体 {self.location_entity_id}，"
                 f"下一章开始于实体 {nxt.location_entity_id}"
+            )
+        elif (
+            self.location_name
+            and nxt.location_name
+            and self.location_name.strip() != nxt.location_name.strip()
+        ):
+            problems.append(
+                f"地点跳变：本章结束于「{self.location_name}」，"
+                f"下一章开始于「{nxt.location_name}」"
+                f"（须写出可叙述的过渡与动机，否则就是硬切）"
             )
         if self.open_thread and not nxt.story_time:
             problems.append("本章留下未收束事件，但下一章没有交代时间")

@@ -1,0 +1,36 @@
+P3(6/7): 骨架与细纲生成节点（C-2 / C-3 前置）
+
+骨架（skeleton_planner）：
+  把旧项目 ultra_structure_config.json 的指标**打开**——它设计正确
+  （min_arcs 6 / core 2 / relationship 2 / opposition 2 / factions 4 /
+  characters 3）但 enabled:false, shadow:true，从不阻断。于是书 23 以
+  「400 章全在第 1 卷、4 个里程碑、0 个势力实体」写完了 400 章。
+  设计对了却关着的校验器，等于没有。
+
+  · 沿用同一组指标，落到「单卷骨架」层
+  · _arc_core_key 近重复检测（模型换前缀/加后缀凑线数）
+  · 段落目标两两不同（旧项目实测 6 段同句 → 29 个重复标题覆盖 65/300 章）
+  · ★ 必须落实卷级台阶的 new_locations / new_factions，否则台阶只是纸面规划，
+    是「全书困在一处」的第二道闸门
+  · 台阶缺扩张字段 → 不调 LLM 直接失败（不静默降级）
+
+细纲（detail_planner）——★ 恢复率 0% 的修复点：
+  旧项目能力矩阵里没有任何 agent 同时具备「看到损伤」与「规划本章节拍」，
+  architect.py 中「伤势|损伤」0 命中 → 细纲层根本不规划伤。
+  本节点把 HealthScheduler 排出的 health_beats 注入 ChapterPlan.health_beats，
+  按规则均匀落到**真实存在的场景**（scene_seq），使恢复成为细纲的一部分，
+  writer 拿到的是可执行指令而不是与细纲冲突的催促。
+
+  · 两道零 LLM 闸门：ChapterPlan.lint + validate_beats_against_scenes
+  · 批次 lint 补单章看不到的问题：漏章 / 重复标题 / 相邻章出口-入口不接
+  · 章号由代码钉定（D-15），数量不符显式失败（不猜、不补空章）
+  · 换场章允许地点跳变（解除旧项目「换图即缺陷」的禁令）
+  · 痊愈章 → BeatType.HEAL，铺垫章 → RECOVERY_PREP（旧项目 VALID_BEATS 无 heal）
+  · 已指定为爆点/高潮的章不被恢复节拍改写节拍类型
+
+domain/outline.py：
+  WorldStateSnapshot 增加 location_name / present_names —— 细纲生成于实体抽取
+  之前，此时没有实体 ID；强行要求 ID 只会让细纲留空（旧项目 entry_state 填充
+  率仅 13%）或让模型瞎编 ID。continuity_problems 优先用 ID、回退用名字比对。
+
+测试 320 → 368（新增 21 骨架 + 27 细纲）。全部通过，契约规则无告警。
