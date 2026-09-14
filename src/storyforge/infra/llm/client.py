@@ -43,6 +43,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -68,6 +69,102 @@ from storyforge.observability.metering import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+
+#: JSON 字符串内部的**裸控制字符**（未转义的换行/制表/回车）。
+#:
+#: ## 为什么必须修（实测）
+#:
+#: 真实运行（小米 MiMo）反复出现：模型在 JSON 字符串里直接换行 ——
+#:
+#:     {"worldview": "世界观围绕一座档案馆展开。
+#:     地下三层是绝对禁区。..."}
+#:
+#: 这在**中文长文本**上极其常见：模型把"段落"当成排版的一部分，
+#: 于是照着写换行。而 JSON 规范禁止字符串内出现裸换行
+#: （`Invalid JSON: expected ':'` 就是它引发的报错）。
+#:
+#: 后果与旧项目 `entity_classify` 空输出 100% 同源：内容完全正确，
+#: 只因一个可机械修复的格式瑕疵，整条链路失败三次后放弃。
+#:
+#: 修法是**在字符串字面量内部**把裸控制字符转义 —— 注意只在字符串内部动，
+#: 结构性的换行（键值之间）必须保留。所以这里用一个状态机逐字符扫描，
+#: 而不是全局 `replace("\n", "\\n")`（那会把 JSON 结构也毁掉）。
+_BARE_CONTROL_IN_STRING = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _summarize_validation_error(exc: Exception | None) -> str:
+    """把 Pydantic 校验错误压成**模型能照着改的**简短清单。
+
+    ## 为什么要压
+
+    Pydantic 的完整报错含 URL、type 名、input 回显，一次能有两千字。
+    把它原样塞进修复 prompt 有两个坏处：
+      · 稀释注意力（真正要改的只有"缺哪个字段"）
+      · 白烧 token（每次修复都重发一遍）
+
+    实测需要的信息其实只有三条：**哪个字段**、**期望什么**、**实际给了什么**。
+    这三条压出来通常不到 200 字。
+    """
+    if exc is None:
+        return "（无错误详情）"
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return str(exc)[:400]
+    try:
+        items = errors()
+    except Exception:  # noqa: BLE001
+        return str(exc)[:400]
+
+    lines: list[str] = []
+    for e in items[:12]:                       # 最多列 12 条，再多也没人看
+        loc = ".".join(str(x) for x in e.get("loc", ()))
+        msg = str(e.get("msg", ""))[:120]
+        etype = e.get("type", "")
+        if etype == "missing":
+            lines.append(f"- 缺必填字段：`{loc}`")
+        elif etype == "extra_forbidden":
+            lines.append(f"- 多出未定义字段：`{loc}`（请删除）")
+        else:
+            lines.append(f"- `{loc}`：{msg}")
+    if len(items) > 12:
+        lines.append(f"- …另有 {len(items) - 12} 处同类问题")
+    return "\n".join(lines) if lines else str(exc)[:400]
+
+
+def _repair_json(s: str) -> str:
+    """修复模型 JSON 输出的**常见机械瑕疵**。
+
+    只做**不改变语义**的修复（转义字符串内的裸控制字符）。
+    不做"补引号""猜键名"这类有歧义的修复 —— 那些应当报错，
+    让上游用具体的错误信息去重试。
+
+    扫描规则（单遍状态机）：
+      · 遇到未转义的 `"` → 翻转「是否在字符串内」
+      · 在字符串内遇到裸控制字符 → 替换成转义形式
+      · 字符串外的字符一律不动
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in s:
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            out.append(ch)
+            continue
+        if in_string and ch in _BARE_CONTROL_IN_STRING:
+            out.append(_BARE_CONTROL_IN_STRING[ch])
+            continue
+        out.append(ch)
+    return "".join(out)
 
 
 class LLMError(RuntimeError):
@@ -231,8 +328,14 @@ class LLMClient:
         context_breakdown: ContextBreakdown | None = None,
         prompt_prefix: str | None = None,
         max_output_tokens: int | None = None,
+        json_mode: bool = False,
     ) -> CallResult:
-        """单次补全（带重试、计量、幂等）。"""
+        """单次补全（带重试、计量、幂等）。
+
+        `json_mode=True` 时要求 provider 走**原生 JSON 输出**
+        （`response_format={"type":"json_object"}`）。仅当模型声明
+        `supports_json_mode` 时才会真正下发 —— 见 `_resolve`。
+        """
         ctx = context or CallContext(node=node)
         ctx.node = node
         model, provider, policy = self._resolve(node)
@@ -256,6 +359,16 @@ class LLMClient:
         params: dict[str, Any] = dict(policy)
         if max_output_tokens is not None:
             params["max_tokens"] = max_output_tokens
+        # ★ 原生 JSON 模式：只在模型**声明支持**时下发。
+        #
+        # 实测（小米 MiMo）：不加这个参数时模型会把 JSON 包在 ```json 里，
+        # 且中文长文本里常出现缺逗号 / 字符串内裸换行 —— 靠事后修复是打地鼠。
+        # 加上 `response_format={"type":"json_object"}` 后**严格解析直接通过**。
+        #
+        # 但这是**能力**，不是所有 provider 都支持（不支持的会直接 400），
+        # 因此由 `providers.toml` 的 `supports_json_mode` 声明，不硬编码厂商判断。
+        if json_mode and model.supports_json_mode:
+            params["json_mode"] = True
 
         last_err: Exception | None = None
         for attempt in range(1, self.config.max_attempts + 1):
@@ -305,6 +418,15 @@ class LLMClient:
 
             # ★ 空输出：必须记录，且必须带诊断信息
             if not (text or "").strip():
+                # ★ 必须把空输出也记进 `last_err` ——
+                # 否则 max_attempts 用尽后 `last_err` 仍是 None，
+                # 报错变成 "节点 detail_planner 调用失败（3 次尝试）："（**空的**），
+                # 完全无法归因。实测踩到：多书测试里细纲阶段失败，
+                # 日志里只有这一句没有原因的话。
+                last_err = LLMError(
+                    f"空输出（finish_reason={finish_reason or 'unknown'}，"
+                    f"prompt {len(system) + len(user)} 字符）"
+                )
                 self.records.append(
                     self._record(
                         ctx, model, provider, CallStatus.BLANK, usage,
@@ -362,9 +484,14 @@ class LLMClient:
         """结构化输出（JSON → Pydantic 校验，失败则带错误重试）。
 
         旧项目 `entity_classify` 空输出 **100%**、`verifier` **62.3%** ——
-        结构化输出是这类节点的主要失败面。本实现：
-          · 抽取类节点由能力声明**禁止思考**（thinking="forbidden"）
-          · 校验失败时把**具体错误**回灌给模型重试（而不是原样重发）
+        结构化输出是这类节点的主要失败面。本实现三层防护：
+
+          1. **原生 JSON 模式**（`json_mode=True`）—— 从根上避免
+             "被代码块包裹 / 缺逗号 / 字符串内裸换行"这一整类语法失败。
+             实测小米 MiMo 加此参数后严格解析直接通过。
+          2. **机械修复** `_repair_json` —— 兜底处理无歧义的格式瑕疵。
+          3. **把具体错误回灌**给模型重试（而不是原样重发），
+             并压成"缺哪个字段"的短清单（`_summarize_validation_error`）。
         """
         ctx = context or CallContext(node=node)
         last_err: Exception | None = None
@@ -375,12 +502,14 @@ class LLMClient:
             if attempt > 1 and last_err is not None:
                 instr = (
                     f"{user}\n\n"
-                    f"【上次输出未通过校验，请修正】\n{last_err}\n"
+                    f"【上次输出未通过校验，请修正】\n"
+                    f"{_summarize_validation_error(last_err)}\n"
                     f"只输出符合要求的 JSON，不要任何解释或代码块标记。"
                 )
             result = await self.complete(
                 node=node, system=system, user=instr, context=ctx,
                 context_breakdown=context_breakdown, prompt_prefix=prompt_prefix,
+                json_mode=True,
             )
             raw = result.text
             try:
@@ -396,14 +525,15 @@ class LLMClient:
 
         raise StructuredOutputError(
             f"节点 {node} 结构化输出校验失败（{self.config.structured_retries + 1} 次尝试）："
-            f"{last_err}\n原始输出前 300 字：{raw[:300]}"
+            f"{_summarize_validation_error(last_err)}\n"
+            f"原始输出前 300 字：{raw[:300]}"
         )
 
     # -- 辅助 ---------------------------------------------------------------
 
     @staticmethod
     def _extract_json(text: str) -> str:
-        """从模型输出中提取 JSON（剥离代码块与前后缀）。"""
+        """从模型输出中提取 JSON（剥离代码块、前后缀，并**修复常见语法瑕疵**）。"""
         s = (text or "").strip()
         if s.startswith("```"):
             nl = s.find("\n")
@@ -415,11 +545,18 @@ class LLMClient:
         # 找到第一个 { 与最后一个 }
         i, j = s.find("{"), s.rfind("}")
         if i != -1 and j != -1 and j > i:
-            return s[i : j + 1]
-        i, j = s.find("["), s.rfind("]")
-        if i != -1 and j != -1 and j > i:
-            return s[i : j + 1]
-        return s
+            s = s[i : j + 1]
+        else:
+            i, j = s.find("["), s.rfind("]")
+            if i != -1 and j != -1 and j > i:
+                s = s[i : j + 1]
+        # 先试原样，能解析就不动它（**不冒险改写正确输入**）
+        try:
+            json.loads(s)
+            return s
+        except (ValueError, TypeError):
+            pass
+        return _repair_json(s)
 
     @staticmethod
     def _is_rate_limit(exc: Exception) -> bool:

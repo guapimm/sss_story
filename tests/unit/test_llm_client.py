@@ -372,3 +372,129 @@ async def test_model_attribution_is_actual_model_not_assumed() -> None:
             f"{r.node_name} 记录的是 {r.model}，但路由选的是 {expected.id} "
             f"—— 成本归因必须用**实际模型**"
         )
+
+# --------------------------------------------------------------------------- #
+# JSON 修复（★ 实测：模型在中文长文本的字符串里直接换行）
+# --------------------------------------------------------------------------- #
+
+
+def test_extract_json_repairs_bare_newline_in_string() -> None:
+    """★ 真实失败样本：JSON 字符串内有裸换行。
+
+    这在**中文长文本**上极其常见 —— 模型把"段落"当排版的一部分，
+    于是照着写换行。而 JSON 规范禁止字符串内出现裸控制字符
+    （报错就是 `Invalid JSON: expected ':'`）。
+
+    内容完全正确，只因一个可机械修复的格式瑕疵，整条链路失败三次后放弃 ——
+    与旧项目 `entity_classify` 空输出 100% 同源。
+    """
+    import json as _json
+
+    from storyforge.infra.llm.client import LLMClient as _C
+
+    bad = (
+        '{\n'
+        '  "worldview": "世界观围绕一座档案馆展开。\n'
+        '地下三层是绝对禁区。",\n'
+        '  "rules": ["规则一", "规则二"]\n'
+        '}'
+    )
+    with pytest.raises(ValueError):
+        _json.loads(bad)                      # 确认样本确实是坏的
+
+    d = _json.loads(_C._extract_json(bad))
+    assert d["rules"] == ["规则一", "规则二"]
+    assert "绝对禁区" in d["worldview"]
+    assert "\n" in d["worldview"], "换行应被转义保留，而不是丢弃"
+
+
+def test_extract_json_leaves_valid_input_byte_identical() -> None:
+    """★ 能解析的输入**一字不改**（不冒险改写正确的东西）。"""
+    from storyforge.infra.llm.client import LLMClient as _C
+
+    good = '{"a": "x", "b": [1, 2]}'
+    assert _C._extract_json(good) == good
+    multi = '{\n  "a": 1,\n  "b": 2\n}'
+    assert _C._extract_json(multi) == multi, "结构换行必须保留"
+
+
+def test_extract_json_preserves_escapes() -> None:
+    """已转义的序列不得被二次转义（`\\n` 不能变成 `\\\\n`）。"""
+    import json as _json
+
+    from storyforge.infra.llm.client import LLMClient as _C
+
+    src = '{"a": "line1\\nline2", "b": "quote\\"inside"}'
+    d = _json.loads(_C._extract_json(src))
+    assert d["a"] == "line1\nline2"
+    assert d["b"] == 'quote"inside'
+
+
+def test_extract_json_repairs_inside_code_block() -> None:
+    import json as _json
+
+    from storyforge.infra.llm.client import LLMClient as _C
+
+    bad = "```json\n{\n  \"a\": \"x\ny\"\n}\n```"
+    assert _json.loads(_C._extract_json(bad))["a"] == "x\ny"
+
+
+def test_extract_json_does_not_invent_missing_syntax() -> None:
+    """★ 只修**无歧义**的控制字符，不猜缺失的引号/键名。
+
+    有歧义的修复会让错误静默变形 —— 那比直接失败危险得多。
+    """
+    import json as _json
+
+    from storyforge.infra.llm.client import LLMClient as _C
+
+    truly_broken = '{"a": 1 "b": 2}'      # 缺逗号
+    with pytest.raises(ValueError):
+        _json.loads(_C._extract_json(truly_broken))
+
+# --------------------------------------------------------------------------- #
+# 校验错误摘要（供修复 prompt 使用）
+# --------------------------------------------------------------------------- #
+
+
+def test_validation_summary_names_the_missing_field() -> None:
+    """★ 修复 prompt 需要的是「缺哪个字段」，不是两千字的 Pydantic 回显。
+
+    实测：模型漏了 `volumes.2.core_conflict`，而原始报错含 URL、type 名、
+    input 回显 —— 把那段塞回 prompt 既稀释注意力又白烧 token。
+    """
+    from pydantic import ValidationError
+
+    from storyforge.infra.llm.client import _summarize_validation_error
+    from storyforge.infra.llm.schemas import VolumePlanOut
+
+    with pytest.raises(ValidationError) as ei:
+        VolumePlanOut.model_validate({
+            "volume_no": 1, "title": "t", "goal": "g",
+            "new_locations": ["a"], "new_factions": ["b"],
+            "antagonist": "x", "power_ceiling": "p",
+            "escalation_from_prev": "从村斗升级为城战",
+            "old_map_closure": "收尾", "chapter_count": 25,
+        })
+    s = _summarize_validation_error(ei.value)
+    assert "core_conflict" in s
+    assert "缺必填字段" in s
+    assert "errors.pydantic.dev" not in s, "不得把文档 URL 塞进 prompt"
+    assert len(s) < 300, f"摘要必须短（实测 {len(s)} 字）"
+
+
+def test_validation_summary_lists_only_field_paths() -> None:
+    from pydantic import ValidationError
+
+    from storyforge.infra.llm.client import _summarize_validation_error
+
+    err = _summarize_validation_error(None)
+    assert isinstance(err, str) and err
+
+
+def test_validation_summary_handles_plain_exception() -> None:
+    """非 Pydantic 异常（如 JSON 语法错）也要给出可读信息。"""
+    from storyforge.infra.llm.client import _summarize_validation_error
+
+    s = _summarize_validation_error(ValueError("Invalid JSON: expected ':'"))
+    assert "Invalid JSON" in s

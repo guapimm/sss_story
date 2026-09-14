@@ -79,9 +79,49 @@ VOLUME_PLANNER_SYSTEM = """你是长篇小说结构规划师。为给定的主�
 
 - `chapter_count`：每卷 150~250 章。
 - `milestones`：卷内里程碑，**间隔不超过 25 章**（否则中间会出现情节真空）。
+  每条写成 `{"chapter_no": 卷内章号, "description": "一句话"}`。
 - `old_map_closure`：旧地图如何收尾（有交代地离开，而非弃置）。
 - 各卷 `chapter_count` 之和应等于目标章数。
 - `total_volumes` 必须等于 `volumes` 数组的长度。
+
+## ★ 字段名必须逐字照抄下面的骨架
+
+实测教训：如果只用散文描述字段，模型会**自造同义名**
+（`volume_number` / `volume_title` / `core_focus` …），
+而每个名字对不上都会让整轮规划失败。**下文骨架就是唯一合法的形状。**
+
+```json
+{
+  "logline": "一句话故事梗概",
+  "theme": "主题",
+  "tone": "基调",
+  "total_volumes": 2,
+  "target_chapters": 25,
+  "volumes": [
+    {
+      "volume_no": 1,
+      "title": "卷标题",
+      "goal": "本卷目标（人类可读）",
+      "new_locations": ["新地图一", "新地图二"],
+      "new_factions": ["新势力一", "新势力二"],
+      "antagonist": "本卷主要对手",
+      "power_ceiling": "本卷力量/能力上限",
+      "core_conflict": "本卷核心矛盾",
+      "escalation_from_prev": "相对上卷升级在哪（写具体内容）",
+      "old_map_closure": "旧地图如何收尾",
+      "volume_end_hook": "卷末钩子",
+      "chapter_count": 13,
+      "milestones": [
+        {"chapter_no": 4, "description": "里程碑内容"},
+        {"chapter_no": 9, "description": "里程碑内容"}
+      ]
+    }
+  ]
+}
+```
+
+卷 1 的 `escalation_from_prev` 写「开局卷，从零建立本世界的规则感」这类即可，
+但**不得留空**、不得写模板句。
 
 **只输出 JSON**，不要任何解释或代码块标记。"""
 
@@ -122,12 +162,17 @@ def series_plan_from_out(out: SeriesPlanOut) -> SeriesPlan:
 
         # 卷内序号 → 全书号（夹紧到本卷范围内，容忍模型的轻微越界）
         milestones: list[Milestone] = []
-        for m in v.milestones:
+        for i, m in enumerate(v.milestones):
             local = max(1, min(n, int(m.chapter_no)))
             milestones.append(
                 Milestone(
                     chapter_no=start + local - 1,
-                    key=m.key,
+                    # ★ 标识符由**代码**生成，不要求模型编。
+                    # 实测：模型把 milestones 写成 `[8, 16]`（裸章号），
+                    # 信息完全等价；要求它同时编一个稳定 key 只会增加
+                    # 一个可以被拒的理由（旧项目 entity_classify 的同类形态）。
+                    # 与 D-15「模型给局部事实、代码算全局标识」同一原则。
+                    key=(m.key or f"v{v.volume_no}m{i + 1}"),
                     description=m.description,
                 )
             )
@@ -216,8 +261,9 @@ async def plan_volumes(
         new_factions_per_volume_min=settings.structure_gate.new_factions_per_volume_min,
         milestone_max_gap=settings.structure_gate.milestone_max_gap,
         location_reuse_ratio_max=settings.structure_gate.location_reuse_ratio_max,
-        chapters_per_volume_min=settings.structure_gate.chapters_per_volume_min,
-        chapters_per_volume_max=settings.structure_gate.chapters_per_volume_max,
+        volume_share_min=settings.structure_gate.volume_share_min,
+        volume_share_max=settings.structure_gate.volume_share_max,
+        chapters_per_volume_floor=settings.structure_gate.chapters_per_volume_floor,
     )
 
     user = (
@@ -253,11 +299,30 @@ async def plan_volumes(
                 calls += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning("volume plan LLM failed (attempt %d): %s", attempt + 1, exc)
-            return VolumePlanResult(
-                plan=None, gate=GateResult(ok=False),
-                repair_rounds=rounds, llm_calls=calls, ok=False,
-                error=f"规划调用失败：{exc}",
+            # ★ 解析失败也必须进入**修复循环**，不能直接放弃。
+            #
+            # 实测踩到（与 `bible_architect` 同型）：模型漏了一个必填字段
+            # （第 3 卷缺 `core_conflict`），`complete_structured` 用尽自己的
+            # 修复重试后抛错 → 这里直接 return → **整条规划链路挂掉**。
+            #
+            # 而「调用失败」与「闸门失败」本就可以走同一条修复路径：
+            # 把**具体错误**发回去重试。旧项目 book23/25 两次 ROLLED_BACK
+            # 就是"一次失败即放弃"的代价。
+            rounds += 1
+            if rounds > max_rounds:
+                break
+            user = (
+                f"【主题】{topic}\n【题材】{genre}\n"
+                f"【目标总章数】{target_chapters}\n\n"
+                f"【上一次输出无法解析，请修正后重新输出完整 JSON】\n"
+                f"- {str(exc)[:400]}\n\n"
+                f"要求：每个卷对象都必须给出**全部必填字段**"
+                f"（volume_no / title / goal / new_locations / new_factions / "
+                f"antagonist / power_ceiling / core_conflict / "
+                f"escalation_from_prev / old_map_closure / chapter_count），"
+                f"一个都不能省。只输出 JSON 本身。"
             )
+            continue
 
         plan = series_plan_from_out(out)
         plan.book_id = book_id

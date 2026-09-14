@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -173,6 +174,25 @@ class StructureGateSettings(BaseModel):
 
     ⚠️ **必须 enabled** —— 旧项目 `ultra_structure_config.json` 的指标设计正确，
     但为 `enabled: false, shadow: true`，导致 400 章全挤第 1 卷、412 项 lint error 全部放行。
+
+    ## 卷规模为什么是**相对区间**而不是绝对章数（实测修正）
+
+    初版用绝对区间 `[150, 250]`，配合「各卷之和 = 目标章数」，
+    会**把书锁死为固定卷数**：
+
+        目标 400 章 → 每卷 150~250 → 只可能 2 卷（200+200）
+        目标 800 章 → 只可能 4 卷（200×4）
+
+    实测：模型规划 4 卷 × 100 章（结构上完全合理）时被拒，
+    而它**无法知道**唯一合法解是"正好 2 卷" —— 这是**过约束**：
+    闸门在替作者定卷数，而不是在检查质量。
+
+    更根本的是：旧项目的真实缺陷不是"每卷章数少"，而是**分配不均**
+    （400 章全挤第 1 卷）。那一点由独立的 `max_volume_share` 检查覆盖。
+
+    因此改为相对占比 + 绝对下限：
+      · `volume_share_min/max` —— 每卷占全书的比例区间
+      · `chapters_per_volume_floor` —— 每卷章数绝对下限（防"每卷 3 章"碎片化）
     """
 
     enabled: bool = True
@@ -180,8 +200,11 @@ class StructureGateSettings(BaseModel):
     new_factions_per_volume_min: int = 2
     milestone_max_gap: int = 25
     location_reuse_ratio_max: float = 0.5
-    chapters_per_volume_min: int = 150
-    chapters_per_volume_max: int = 250
+    #: 每卷占全书章数的比例区间（相对；不锁死卷数）
+    volume_share_min: float = 0.15
+    volume_share_max: float = 0.60
+    #: 每卷章数绝对下限（防碎片化：低于此值不是"卷"，是"章组"）
+    chapters_per_volume_floor: int = 20
     repair_attempts: int = 5
 
 
@@ -253,6 +276,73 @@ class Settings(BaseSettings):
 
 
 # --------------------------------------------------------------------------- #
+# .env 密钥加载（★ 唯一允许读密钥文件的入口）
+# --------------------------------------------------------------------------- #
+
+
+#: `.env` 的候选位置：仓库根优先，其次当前工作目录。
+#: 只读**仓库根**那份即可满足绝大多数场景，留第二个是为了
+#: "在子目录里跑脚本"时仍能找到。
+def dotenv_paths() -> list[Path]:
+    return [REPO_ROOT / ".env"]
+
+
+def load_dotenv(*, override: bool = False) -> list[str]:
+    """把 `.env` 里的键值注入 `os.environ`，返回**被注入的键名**（不是值）。
+
+    ## 设计约束
+
+    1. **不覆盖已存在的环境变量**（`override=False` 为默认）。
+       真实 shell 环境优先于文件 —— 这样 CI、临时 `$env:X=...`、
+       以及"临时换一个 key 试试"都能生效，而不会被文件悄悄盖掉。
+       旧项目的教训正是**静默覆盖**：`.env` 写的模型被 `llm_providers.json`
+       覆盖，且没有任何提示。
+
+    2. **只回传键名，永不回传值** —— 调用方可以放心打印。
+       密钥绝不能进日志（`doctor` 会打印"未配置: [...]"这类信息，
+       那是键名，不是值）。
+
+    3. **格式宽容但解析严格**：支持 `KEY=VALUE`、`export KEY=VALUE`、
+       `#` 注释、空行、值两侧的引号。解析不出 `=` 的行**跳过**而不是报错 ——
+       `.env` 常常被手工编辑，因为一行笔误就让整个程序起不来是不合理的。
+
+    4. **文件不存在不是错误**（返回空列表）。CI 里通常没有 `.env`。
+
+    ⚠️ 本函数**只被 CLI 入口与测试显式调用**，不在 import 期自动执行 ——
+    保持"配置在运行时注入"这一设计（见模块 docstring）。
+    """
+    injected: list[str] = []
+    for path in dotenv_paths():
+        if not path.exists():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s.lower().startswith("export "):
+                s = s[7:].lstrip()
+            key, sep, value = s.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            if not key:
+                continue
+            value = value.strip()
+            # 去掉成对引号（值里含 # 或空格时必须写引号）
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            if not override and key in os.environ:
+                continue
+            os.environ[key] = value
+            injected.append(key)
+    return injected
+
+
+# --------------------------------------------------------------------------- #
 # 运行时注入（关键设计：不在 import 期冻结）
 # --------------------------------------------------------------------------- #
 
@@ -314,6 +404,8 @@ __all__ = [
     "REPO_ROOT",
     "DEFAULT_CONFIG_DIR",
     "DEFAULT_DATA_DIR",
+    "dotenv_paths",
+    "load_dotenv",
     "LLMSettings",
     "MemorySettings",
     "ScorecardSettings",

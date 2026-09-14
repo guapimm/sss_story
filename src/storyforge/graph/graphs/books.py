@@ -179,7 +179,7 @@ def build_volume_plan_graph(deps: GraphDeps) -> CompiledStateGraph:
         if not result.ok or result.plan is None:
             return {
                 "gate_ok": False,
-                "gate_issues": [i.to_dict() for i in result.gate.issues],
+                "gate_issues": result.gate.issues_to_state(),
                 "repair_round": result.repair_rounds,
             }
         ref = persist_series_plan(deps.store, result.plan)

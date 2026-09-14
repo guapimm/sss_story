@@ -71,6 +71,31 @@ SKELETON_PLANNER_SYSTEM = """你是长篇小说结构师。为**当前这一卷*
 3. **对立线要写出赌注**：输了会失去什么（不是"打不过"而是具体代价）。
 4. 每条线都要有**在本卷内的起止**，不要写成贯穿全书的概述。
 
+## ★ 字段名必须逐字照抄下面的骨架
+
+实测教训：只用散文描述字段时，模型会自造同义名或改变形状，
+而每个不一致都会让整轮失败。
+
+```json
+{
+  "arcs": [
+    {
+      "key": "十三条",
+      "kind": "core",
+      "description": "这条线讲什么（一句话，≥10 字）",
+      "chapter_span": [1, 60]
+    }
+  ],
+  "segments": ["第一段的目标", "第二段的目标（必须与上一条不同）"],
+  "characters": ["角色甲", "角色乙", "角色丙"],
+  "factions": ["势力甲", "势力乙", "势力丙", "势力丁"]
+}
+```
+
+⚠️ `arcs` 每条都必须有 `key` / `kind` / `description` / `chapter_span` 四项；
+`kind` 只能是 `core` / `relationship` / `opposition` / `sub` 之一（英文小写）。
+`segments` / `characters` / `factions` 都是**字符串数组**。
+
 **只输出 JSON**，不要任何解释或代码块标记。"""
 
 
@@ -94,6 +119,132 @@ class SkeletonResult:
     error: str | None = None
 
 
+#: 判定「骨架是否落实了台阶的某一项」时，忽略这些字符。
+#:
+#: ★ 为什么必须容错（实测假阳性）：校验器原先用**整串精确匹配**
+#: （`f in blob`），而模型会自然地改写措辞：
+#:
+#:     台阶要求                              骨架实际写的
+#:     档案馆内部保守派值夜人集团      →     保守派值夜人集团（省了修饰语）
+#:     外部调查记者组织"记忆之眼"      →     '记忆之眼'组织（换了引号、调了语序）
+#:     城市边缘的废弃印刷厂（关联…）   →     潜入废弃印刷厂（只留关键词）
+#:
+#: 三处**都落实了**，却被判为"未落实" —— 这是**假阳性**，
+#: 而假阳性比漏判更糟：它会逼人去改本来正确的产物，或在反复失败后
+#: 干脆把校验器关掉（旧项目 `enabled: false` 的老路）。
+#:
+#: 这与 P2 修「细纲落实率」时踩的是同一个坑（当时从关键词精确匹配
+#: 改成字符 2-gram 包含率），这个校验器当时漏改了。
+_STRIP_CHARS = "（）()「」《》\"'‘’“”·—-,，。.、:：;；!！?？ \t\n\r"
+
+#: 「算作提到了」所需的**最长公共子串**长度下限（字符）。
+#:
+#: 用**绝对长度**而不是比例，因为比例在长短名上行为不一致：
+#:   · `城市边缘的废弃印刷厂` vs 骨架里的 `潜入废弃印刷厂`
+#:     → LCS = `废弃印刷厂`（5 字），比例只有 0.5，但**显然是落实了**
+#:   · `记忆` vs 骨架里的 `'记忆之眼'组织`
+#:     → LCS = `记忆`（2 字），比例 1.0，但**算不上落实了「记忆」这个势力**
+#:
+#: 取 4：中文里 4 字已足够辨识（`记忆之眼` / `废弃印刷厂`），
+#: 而 2~3 字的重合多半是巧合（`组织` / `集团` 这类通用词）。
+_MENTION_MIN_LCS = 4
+
+
+def _name_and_gloss(item: str) -> tuple[str, str]:
+    """把台阶项拆成 **(主名, 括注)**。
+
+    ## ★ 为什么必须拆（实测第二次假阳性）
+
+    台阶项常写成「主名（解释）」：
+
+        旧派（主张严格恪守现有手册，反对任何调查或改变）
+        探疑者（由数名年轻值夜人秘密组成，试图寻找规则漏洞与真相）
+
+    而骨架会用**同样的主名 + 自己的括注**：
+
+        旧派（以老白为代表）
+        探疑者（陈默、张小刀等秘密小组）
+
+    这**完全落实了**台阶要求（实体在、线在、段落在）。
+    但整串比对时，24 字的长括注把 2 字的 `旧派` 淹没了 ——
+    LCS 只有 2，低于阈值 4 → 判为"未落实"。
+
+    **括注是解释，主名才是标识。** 因此匹配时以主名为准；
+    骨架只要用了同一个主名就算落实（它的括注可以完全不同）。
+    """
+    s = (item or "").strip()
+    if not s:
+        return "", ""
+    m = re.match(r"^([^（(]+)[（(](.*)[）)]\s*$", s)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return s, ""
+
+
+def _normalize_for_match(text: str) -> str:
+    """去掉全部标点与空白，只留下可比对的字。
+
+    ⚠️ 用 `re.sub` 全局删除，而不是 `str.strip` ——
+    `strip` 只处理两端，`外部调查记者组织“记忆之眼”` 的**起始引号在中间**，
+    根本不会被去掉（实测踩到）。
+    """
+    return re.sub(f"[{re.escape(_STRIP_CHARS)}]", "", text or "")
+
+
+def _mentions(blob: str, item: str) -> bool:
+    """骨架文本里是否**落实**了台阶的这一项（容错匹配）。
+
+    判定顺序（由严到宽）：
+      1. **主名整串出现** —— 台阶项写作「主名（解释）」时，
+         骨架用了同一主名即算落实（它的括注可以不同）
+      2. 整串出现（去标点后）
+      3. **最长公共子串 ≥ `_MENTION_MIN_LCS`** —— 抓省修饰语/截断的写法
+
+    只做"是否出现"的确定性判断，不做语义判断 ——
+    "这个势力是否被安排得合理"属于审校层的事。
+    """
+    if not item or not item.strip():
+        return True
+    b = _normalize_for_match(blob)
+    name, _gloss = _name_and_gloss(item)
+    # ① 主名（这是最可靠的标识）
+    if name:
+        qn = _normalize_for_match(name)
+        # 主名很短（≤3 字）时要求它**独立成词**，避免「旧派」撞上「旧派系」
+        if qn and qn in b:
+            return True
+    # ② 整串
+    q = _normalize_for_match(item)
+    if not q:
+        return True
+    if q in b:
+        return True
+    # ③ 最长公共子串（抓截断/省修饰语）
+    return _lcs_len(b, q) >= _MENTION_MIN_LCS
+
+
+def _lcs_len(a: str, b: str) -> int:
+    """最长公共**子串**长度（连续）。
+
+    用子串而不是子序列：子序列会把
+    「保守派值夜人集团」与「保守派系另有其人集团」也算匹配 —— 那太宽。
+    """
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for ca in a:
+        cur = [0] * (len(b) + 1)
+        for j, cb in enumerate(b, 1):
+            if ca == cb:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
+#: 兼容旧名（早先叫 `_lcs_ratio`，返回比例；比例口径在长短名上不一致，已废弃）
 def _arc_core_key(key: str) -> str:
     """剥离线的前缀/尾标，用于**近重复**判定。
 
@@ -179,7 +330,10 @@ def validate_skeleton(sk: SkeletonOut, volume: VolumePlan | None = None) -> list
     # ── 落实卷级台阶的扩张要求（关键）──
     if volume is not None:
         fac_blob = " ".join(facs)
-        missing_fac = [f for f in volume.new_factions if f and f not in fac_blob]
+        missing_fac = [
+            f for f in volume.new_factions
+            if f and not _mentions(fac_blob, f)
+        ]
         if missing_fac:
             issues.append(
                 f"骨架未落实本卷台阶指定的新势力：{missing_fac} —— "
@@ -190,7 +344,7 @@ def validate_skeleton(sk: SkeletonOut, volume: VolumePlan | None = None) -> list
         ) + " " + " ".join(segs)
         missing_loc = [
             loc for loc in volume.new_locations
-            if loc and loc not in loc_blob
+            if loc and not _mentions(loc_blob, loc)
         ]
         if missing_loc:
             issues.append(

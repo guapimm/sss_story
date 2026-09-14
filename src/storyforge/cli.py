@@ -376,11 +376,22 @@ def _guard_api_key() -> int | None:
         p for p in reg.providers.values()
         if p.api_key_env and not p.resolve_api_key()
     ]
-    if missing and len(missing) == len(reg.providers):
-        print("未配置任何 API key。请设置环境变量后再运行，例如：", file=sys.stderr)
+    # 只有当**默认 provider** 也拿不到 key 时才拦（其余 provider 可能用不上）
+    default_name = getattr(reg, "default_provider", None)
+    default_ok = True
+    if default_name and default_name in reg.providers:
+        default_ok = bool(reg.providers[default_name].resolve_api_key())
+    if not default_ok:
+        print("未配置 API key。二选一：", file=sys.stderr)
+        print("  ① 写进 .env（推荐，已被 .gitignore 忽略）：", file=sys.stderr)
         for p in missing:
-            print(f"  $env:{p.api_key_env} = \"sk-...\"", file=sys.stderr)
-        print("\n（也可运行 `storyforge doctor` 查看配置状态）", file=sys.stderr)
+            print(f"       {p.api_key_env}=sk-...", file=sys.stderr)
+        print("  ② 或临时设环境变量（仅当前 shell 有效）：", file=sys.stderr)
+        for p in missing:
+            print(f'       $env:{p.api_key_env} = "sk-..."', file=sys.stderr)
+        print(f"\n  .env 位置：{REPO_ROOT / '.env'}", file=sys.stderr)
+        print("  （模板见 .env.example；可运行 `storyforge doctor` 查看配置状态）",
+              file=sys.stderr)
         return 2
     return None
 
@@ -413,20 +424,33 @@ async def _run_plan(args: argparse.Namespace) -> int:
     bible_ref = out["refs"]["bible_ref"]
     print(f"      → {bible_ref}")
 
-    # ── ② 全卷台阶 ──
-    print(f"[2/4] 规划全部卷的升级台阶（目标 {args.chapters} 章）…")
+    # ── ② 全卷台阶（按**整本书**规划）──
+    #
+    # ★ `--chapters` 是「先写几章」，不是「全书几章」。
+    #
+    # 为什么：台阶的意义在于**横向扩张**——每卷开新地图、换新对手。
+    # 若按"全书 25 章"规划，25 章本来就该发生在一个地方，
+    # 于是恰恰测不出本项目要修的核心缺陷（旧项目 400 章困在一栋楼里）。
+    # 因此按 `--book-chapters`（默认 400，旧项目实测量级）规划全部卷，
+    # 只把正文先写前 `--chapters` 章。
+    print(f"[2/4] 规划全部卷的升级台阶（全书 {args.book_chapters} 章）…")
     out = await build_volume_plan_graph(deps).ainvoke(
         {
             "book_id": book_id, "topic": args.topic, "genre": args.genre,
-            "target_chapters": args.chapters,
+            "target_chapters": args.book_chapters,
             "refs": {"bible_ref": bible_ref},
         },
         thread_config(f"b{book_id}:volume_plan"),
     )
     if not out.get("gate_ok"):
-        print(f"结构闸门未通过：{out.get('gate_issues')}", file=sys.stderr)
-        print("（台阶必须一次定稿全部卷 —— 旧项目只细化第 1 卷 → 400 章挤第 1 卷）",
-              file=sys.stderr)
+        print("结构闸门未通过：", file=sys.stderr)
+        for i in out.get("gate_issues", [])[:20]:
+            vol = f"（第{i.get('volume_no')}卷）" if i.get("volume_no") else ""
+            print(f"  - [{i.get('code')}]{vol} {i.get('message')}", file=sys.stderr)
+        print(
+            "\n（台阶必须一次定稿全部卷 —— 旧项目只细化第 1 卷 → 400 章挤第 1 卷）",
+            file=sys.stderr,
+        )
         return 1
     print(f"      → {out['series_plan_ref']}（{out['total_volumes']} 卷，"
           f"修复轮次 {out['repair_round']}）")
@@ -613,7 +637,16 @@ def build_parser() -> argparse.ArgumentParser:
     pn.add_argument("--book-id", type=int, required=True)
     pn.add_argument("--topic", required=True, help="主题")
     pn.add_argument("--genre", default="suspense", help="题材（默认 suspense）")
-    pn.add_argument("--chapters", type=int, default=25, help="目标章数（默认 25）")
+    pn.add_argument(
+        "--book-chapters", type=int, default=400,
+        help="**全书**规划章数（默认 400，旧项目实测量级）。"
+        "台阶按这个规模规划 —— 横向扩张必须按整本书来设计，"
+        "否则「全书困在一处」这个核心缺陷测不出来",
+    )
+    pn.add_argument(
+        "--chapters", type=int, default=25,
+        help="本卷先生成几章细纲（默认 25）。**不是全书章数**",
+    )
     pn.add_argument("--volume", type=int, default=1, help="先做第几卷（默认 1）")
     pn.set_defaults(func=cmd_plan)
 
@@ -651,6 +684,11 @@ def _force_utf8_console() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_console()
+    # ★ 从 .env 加载密钥（键名会回传，**值永不打印**）。
+    # 真实环境变量优先，不被文件覆盖 —— 见 `load_dotenv` 的说明。
+    from storyforge.config import load_dotenv
+
+    load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

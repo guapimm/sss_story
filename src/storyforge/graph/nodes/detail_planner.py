@@ -100,6 +100,52 @@ DETAIL_PLANNER_SYSTEM = """你是长篇小说细纲规划师。为给定的章�
    不得硬切。
 5. **标题两两不同**，且不要用「XX的XX」同构句式批量生产。
 
+## ★ 字段名必须逐字照抄下面的骨架
+
+实测教训：只用散文描述字段时，模型会自造同义名或改变形状，
+而每个不一致都会让**整批**细纲失败。
+
+```json
+{
+  "chapters": [
+    {
+      "title": "章标题（具体、有信息量、不得与其他章重复）",
+      "plot": "一句话剧情梗概",
+      "beat_type": "normal",
+      "is_transition": false,
+      "scenes": [
+        {
+          "goal": "谁想做什么（具体到动作与对象）",
+          "obstacle": "阻碍是什么",
+          "outcome": "结果是什么（必须可检验）",
+          "why_now": "为什么是现在（必须由上一拍结果逼出）",
+          "location": "场景地点名",
+          "participants": ["在场人物名"]
+        }
+      ],
+      "entry_state": {
+        "location": "地点名",
+        "story_time": "故事内时间，如「第三日夜」",
+        "present": ["在场人物名"],
+        "known": ["谁知道什么"],
+        "open_thread": "章末未收束的事件本身"
+      },
+      "exit_state": {
+        "location": "地点名",
+        "story_time": "故事内时间",
+        "present": ["在场人物名"],
+        "known": ["谁知道什么"],
+        "open_thread": "章末未收束的事件本身"
+      },
+      "end_hook": "章末钩子：本章现场内悬而未决的事件本身"
+    }
+  ]
+}
+```
+
+⚠️ `scenes` 必须有 **4~8** 个，每拍四项（`goal`/`obstacle`/`outcome`/`why_now`）
+**一个都不能少**；`entry_state` / `exit_state` 是**对象**不是字符串。
+
 **只输出 JSON**，不要任何解释或代码块标记。"""
 
 

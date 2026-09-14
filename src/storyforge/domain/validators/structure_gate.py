@@ -60,6 +60,22 @@ class GateIssue:
     #: 供修复节点使用的定位信息
     context: dict = field(default_factory=dict)
 
+    def to_dict(self) -> dict:
+        """序列化 —— 供图 state 与日志使用。
+
+        ★ 图 state 只放**小标量**（契约规则 5/19），所以闸门问题在进 state 前
+        必须转成 dict。这个方法就是那个转换点。
+
+        （`GateResult` 本身不进 state：它含 metrics 与全部 issue，
+        体积不固定；state 里只留 `gate_ok` + `gate_issues` 两个小字段。）
+        """
+        return {
+            "code": self.code.value,
+            "message": self.message,
+            "volume_no": self.volume_no,
+            "context": dict(self.context),
+        }
+
 
 @dataclass
 class GateResult:
@@ -81,6 +97,15 @@ class GateResult:
             out.setdefault(i.code.value, []).append(i)
         return out
 
+    def issues_to_state(self, *, limit: int = 20) -> list[dict]:
+        """问题清单 → 可进图 state 的小 dict 列表（**有上限**）。
+
+        ⚠️ 必须有上限：闸门可能一次报出几百项（旧项目实测 412 项 lint error），
+        全部塞进 state 会让 checkpoint 膨胀，而 state 只应放小标量。
+        超出的部分由 `metrics` 里的计数体现。
+        """
+        return [i.to_dict() for i in self.issues[:limit]]
+
     def summary(self) -> str:
         if self.ok:
             return "结构闸门通过"
@@ -100,8 +125,34 @@ class GateConfig:
     new_factions_per_volume_min: int = 2
     milestone_max_gap: int = 25
     location_reuse_ratio_max: float = 0.5
-    chapters_per_volume_min: int = 150
-    chapters_per_volume_max: int = 250
+
+    # ── 卷规模：**相对区间** + 绝对下限 ──
+    #
+    # ★ 为什么不是绝对区间（150~250）（实测修正）
+    #
+    # 初版用绝对区间 [150, 250]，配合「各卷之和 = 目标章数」，
+    # 会**把书锁死为固定卷数**：
+    #
+    #     目标 400 章 → 每卷 150~250 → 只可能 2 卷（200+200）
+    #     目标 800 章 → 只可能 4 卷（200×4）
+    #
+    # 模型规划出 4 卷 × 100 章（结构上完全合理）时被拒，而它**无法知道**
+    # 唯一合法解是"正好 2 卷" —— 这是**过约束**：闸门在替作者定卷数，
+    # 而不是在检查质量。
+    #
+    # 更根本的是：旧项目的真实缺陷不是"每卷章数少"，而是**分配不均**
+    # （400 章全挤第 1 卷）。那一点由下面独立的 `max_volume_share` 检查覆盖。
+    #
+    # 因此改为**相对区间**：
+    #   · 每卷占比 ∈ [`volume_share_min`, `volume_share_max`]
+    #   · 且每卷章数 ≥ `chapters_per_volume_floor`（防"每卷 3 章"的碎片化）
+    #
+    # 400 章时：4×100 章（25% each）→ 通过；1 卷 400 章（100%）→ 被拦。
+    # 800 章时：4×200 → 通过；8×100 → 通过。不再锁死卷数。
+    volume_share_min: float = 0.15
+    volume_share_max: float = 0.60
+    #: 每卷章数的**绝对下限**（防碎片化）。低于此值不是"卷"，是"章组"。
+    chapters_per_volume_floor: int = 20
 
 
 def evaluate_series(plan: SeriesPlan, cfg: GateConfig | None = None) -> GateResult:
@@ -159,7 +210,10 @@ def evaluate_series(plan: SeriesPlan, cfg: GateConfig | None = None) -> GateResu
     seen_locations: set[str] = set()
     seen_factions: set[str] = set()
     for v in volumes:
-        _check_volume(v, c, issues, seen_antagonists, seen_locations, seen_factions)
+        _check_volume(
+            v, c, issues, seen_antagonists, seen_locations, seen_factions,
+            target_chapters=plan.target_chapters,
+        )
 
     # ── 4. 全局指标 ──
     metrics["volumes"] = float(len(volumes))
@@ -179,6 +233,8 @@ def _check_volume(
     seen_antagonists: set[str],
     seen_locations: set[str],
     seen_factions: set[str],
+    *,
+    target_chapters: int = 0,
 ) -> None:
     # 新地图
     locs = [x.strip() for x in v.new_locations if x.strip()]
@@ -277,18 +333,33 @@ def _check_volume(
             )
         )
 
-    # 卷规模
+    # 卷规模：**相对占比** + 绝对下限（见 `GateConfig` 的说明）
     n = v.chapter_count
-    if n < c.chapters_per_volume_min or n > c.chapters_per_volume_max:
+    if n < c.chapters_per_volume_floor:
         issues.append(
             GateIssue(
                 GateErrorCode.CHAPTER_DISTRIBUTION,
-                f"第 {v.volume_no} 卷 {n} 章，超出 [{c.chapters_per_volume_min}, "
-                f"{c.chapters_per_volume_max}] 建议区间（决策 D-07）",
+                f"第 {v.volume_no} 卷只有 {n} 章（绝对下限 {c.chapters_per_volume_floor}）"
+                f"—— 这不是一卷，是章组；碎片化的卷会让升级台阶失去意义",
                 volume_no=v.volume_no,
-                context={"chapters": n},
+                context={"chapters": n, "floor": c.chapters_per_volume_floor},
             )
         )
+    elif target_chapters:
+        share = n / target_chapters
+        if share < c.volume_share_min or share > c.volume_share_max:
+            issues.append(
+                GateIssue(
+                    GateErrorCode.CHAPTER_DISTRIBUTION,
+                    f"第 {v.volume_no} 卷 {n} 章，占全书 {share:.0%}，"
+                    f"超出 [{c.volume_share_min:.0%}, {c.volume_share_max:.0%}]"
+                    f"（目标 {target_chapters} 章）—— "
+                    f"占比过小说明本卷撑不起一条完整的升级台阶",
+                    volume_no=v.volume_no,
+                    context={"chapters": n, "share": round(share, 3),
+                             "target": target_chapters},
+                )
+            )
 
     # 里程碑密度：**防 202 章真空**（旧项目书 23：3 → 205）
     if n > 0:

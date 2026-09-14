@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from storyforge.domain.enums import HealthAction, InjuryStatus
+from storyforge.domain.enums import HealthAction, InjuryKind, InjuryStatus
 from storyforge.domain.health import (
     NEVER_URGE,
     HealthBeat,
@@ -185,7 +185,13 @@ class HealthScheduler:
             if injury.is_permanent:
                 continue
             # 诅咒：由伏笔驱动，不按章规划（旧项目声称如此但从未实现关联）
-            if injury.kind.value == "诅咒" and injury.bound_foreshadow_key is None:
+            #
+            # ⚠️ 这里用**枚举成员**比较，不用 `.value == "诅咒"` 字面量：
+            #    字面量比较在重命名枚举值时**静默失效**（比较永假，不报错），
+            #    而后果正是旧项目那个「声称由伏笔驱动、实际无人关联」的形态 ——
+            #    诅咒会掉进按章催促的路径。枚举成员比较则会被类型检查与
+            #    重命名重构显式带出来。
+            if injury.kind is InjuryKind.CURSE and injury.bound_foreshadow_key is None:
                 continue
             # ★ 幂等：该伤势已有节拍排入细纲 → 整条跳过
             if self._planned_chapters_for(injury.id, existing):

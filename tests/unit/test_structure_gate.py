@@ -269,13 +269,93 @@ def test_blocks_volume_count_mismatch() -> None:
 
 
 def test_blocks_volume_size_out_of_range() -> None:
-    """卷规模超出 [150, 250]（决策 D-07）。"""
+    """卷规模超出相对占比区间 → 阻断。
+
+    ⚠️ 口径已从「绝对章数 [150,250]」改为「相对占比 + 绝对下限」，
+    原因见 `test_relative_share_does_not_lock_volume_count`。
+    这里第 1 卷占 400/600 = 67% > 60% → 仍应阻断。
+    """
     plan = SeriesPlan(
         book_id=1, total_volumes=2, target_chapters=600,
         volumes=[mk_volume(1, 1, 400, milestones=16), mk_volume(2, 401, 600, milestones=8)],
     )
     result = evaluate_series(plan)
     assert GateErrorCode.CHAPTER_DISTRIBUTION in {i.code for i in result.issues}
+
+
+def test_relative_share_does_not_lock_volume_count() -> None:
+    """★ 相对占比**不得锁死卷数**（实测过约束修正）。
+
+    绝对区间 `[150, 250]` 配合「各卷之和 = 目标章数」会锁死卷数：
+        目标 400 章 → 只可能 2 卷（200+200）
+        目标 800 章 → 只可能 4 卷（200×4）
+
+    实测模型规划 **4 卷 × 100 章**（400 章，结构完全合理）时被拒，
+    而它**无法知道**唯一合法解是"正好 2 卷" —— 闸门在替作者定卷数，
+    而不是在检查质量。
+
+    改相对占比后：4 × 25% 应当**通过**。
+    """
+    plan = SeriesPlan(
+        book_id=1, total_volumes=4, target_chapters=400,
+        volumes=[
+            mk_volume(1, 1, 100, milestones=4),
+            mk_volume(2, 101, 200, milestones=4),
+            mk_volume(3, 201, 300, milestones=4),
+            mk_volume(4, 301, 400, milestones=4),
+        ],
+    )
+    result = evaluate_series(plan)
+    dist = [i for i in result.issues if i.code == GateErrorCode.CHAPTER_DISTRIBUTION]
+    assert not dist, f"4 卷各占 25% 应当通过，实测问题：{dist}"
+
+
+def test_two_volume_split_still_passes() -> None:
+    """回归：2 卷 × 200 章（400 章）在新口径下仍然通过。"""
+    plan = SeriesPlan(
+        book_id=1, total_volumes=2, target_chapters=400,
+        volumes=[mk_volume(1, 1, 200, milestones=8),
+                 mk_volume(2, 201, 400, milestones=8)],
+    )
+    result = evaluate_series(plan)
+    dist = [i for i in result.issues if i.code == GateErrorCode.CHAPTER_DISTRIBUTION]
+    assert not dist, dist
+
+
+def test_fragmented_volumes_blocked_by_absolute_floor() -> None:
+    """★ 相对区间之外仍要**绝对下限**：防"每卷 3 章"的碎片化。
+
+    占比检查对碎片化是无效的（20 卷 × 5% 全部"合规"），
+    所以下限必须独立存在。
+    """
+    plan = SeriesPlan(
+        book_id=1, total_volumes=4, target_chapters=400,
+        volumes=[
+            mk_volume(1, 1, 10, milestones=1),
+            mk_volume(2, 11, 20, milestones=1),
+            mk_volume(3, 21, 30, milestones=1),
+            mk_volume(4, 31, 400, milestones=16),
+        ],
+    )
+    result = evaluate_series(plan)
+    msgs = [i.message for i in result.issues
+            if i.code == GateErrorCode.CHAPTER_DISTRIBUTION]
+    assert any("绝对下限" in m for m in msgs), msgs
+
+
+def test_single_volume_dominating_book_is_blocked() -> None:
+    """★ 旧项目真实缺陷：400 章**全挤第 1 卷**（占 100%）必须被拦。
+
+    这是与"锁死卷数"要区分开的那件事 —— 修掉过约束**不能**把真正的
+    缺陷一起放走。
+    """
+    plan = SeriesPlan(
+        book_id=1, total_volumes=5, target_chapters=400,
+        volumes=[mk_volume(1, 1, 400, milestones=16)],
+    )
+    plan.total_volumes = 1  # 只规划了 1 卷
+    result = evaluate_series(plan)
+    assert not result.ok
 
 
 # --------------------------------------------------------------------------- #

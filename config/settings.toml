@@ -86,8 +86,18 @@ new_locations_per_volume_min = 2
 new_factions_per_volume_min = 2
 milestone_max_gap = 25
 location_reuse_ratio_max = 0.5
-chapters_per_volume_min = 150
-chapters_per_volume_max = 250
+# ── 卷规模：**相对占比** + 绝对下限，不是绝对章数 ──
+#
+# 为什么不是 [150, 250]：绝对区间配合「各卷之和 = 目标章数」会**锁死卷数** ——
+#   目标 400 章 → 只可能 2 卷；目标 800 章 → 只可能 4 卷。
+# 实测模型规划 4 卷 × 100 章（结构合理）被拒，而它无法知道唯一解是"正好 2 卷"。
+# 那是**过约束**：闸门在替作者定卷数，而非检查质量。
+#
+# 旧项目的真实缺陷是**分配不均**（400 章全挤第 1 卷），
+# 那一点由独立的 max_volume_share 检查覆盖，与本节无关。
+volume_share_min = 0.15          # 每卷至少占全书 15%
+volume_share_max = 0.60          # 每卷至多占全书 60%
+chapters_per_volume_floor = 20   # 每卷绝对下限，防"每卷 3 章"碎片化
 repair_attempts = 5
 
 [pipeline]

@@ -1,0 +1,124 @@
+{
+ "results": [
+  {
+   "book_id": 11,
+   "genre": "suspense",
+   "topic": "规则怪谈：旧档案馆的值夜人，规则写在手册上，触犯者会被遗忘",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": false,
+   "volumes": 0,
+   "repair_rounds": 6,
+   "skeleton_ok": false,
+   "detail_ok": false,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 203.47483560000546,
+   "failures": [
+    "volume:other"
+   ]
+  },
+  {
+   "book_id": 12,
+   "genre": "xianxia",
+   "topic": "仙侠修真：一个灵根尽毁的杂役弟子，靠解读残破功法在宗门夹缝中一步步登顶",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 5,
+   "repair_rounds": 0,
+   "skeleton_ok": true,
+   "detail_ok": true,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 1206.5583738999849,
+   "failures": []
+  },
+  {
+   "book_id": 13,
+   "genre": "romance",
+   "topic": "都市言情：离婚律师与急诊科医生，两个不相信长期关系的人互相试探",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 3,
+   "repair_rounds": 0,
+   "skeleton_ok": false,
+   "detail_ok": false,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 175.99359849997563,
+   "failures": [
+    "volume:new_locations"
+   ]
+  },
+  {
+   "book_id": 14,
+   "genre": "scifi",
+   "topic": "硬科幻：深空补给站的最后一名维护员，发现站内 AI 在伪造地球的通讯",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": false,
+   "volumes": 0,
+   "repair_rounds": 6,
+   "skeleton_ok": false,
+   "detail_ok": false,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 229.09765740000876,
+   "failures": [
+    "volume:other",
+    "volume:other",
+    "volume:other",
+    "volume:other"
+   ]
+  },
+  {
+   "book_id": 15,
+   "genre": "history",
+   "topic": "历史架空：边关小城的文书吏，在两国议和的前夜发现军报被人调换",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 2,
+   "repair_rounds": 0,
+   "skeleton_ok": false,
+   "detail_ok": false,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 199.66948760001105,
+   "failures": [
+    "volume:new_locations"
+   ]
+  },
+  {
+   "book_id": 16,
+   "genre": "mystery",
+   "topic": "现代悬疑：一桩十二年前的旧案重开，唯一的目击者如今是负责此案的警官",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 2,
+   "repair_rounds": 0,
+   "skeleton_ok": true,
+   "detail_ok": true,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 1076.6601312999846,
+   "failures": []
+  }
+ ],
+ "failures": {
+  "volume:other": [
+   11,
+   14,
+   14,
+   14,
+   14
+  ],
+  "volume:new_locations": [
+   13,
+   15
+  ]
+ }
+}

@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 from storyforge.infra.llm.client import CallContext, LLMClient
@@ -62,11 +63,54 @@ BIBLE_ARCHITECT_SYSTEM = """你是长篇小说的世界观架构师。为给定�
   用于保证全书用词一致。
 - `title`：书名。
 
+## ★ 字段名必须逐字照抄下面的骨架
+
+实测教训：只用散文描述字段时，模型会**自造同义名**或改变形状
+（如把 `terms` 写成 `{"说法": "含义"}` 对象），而每个不一致都会让整轮失败。
+
+```json
+{
+  "title": "书名",
+  "worldview": "世界的结构与基本样貌：地理格局、社会形态、当前局势（300~800 字）",
+  "power_system": "力量/能力体系的层级与边界：层次、晋升、代价、做不到什么",
+  "rules": ["世界硬规则一", "世界硬规则二"],
+  "era": "时代与地域背景",
+  "tone": "整体基调与文风",
+  "terms": ["世界内说法——含义", "另一个说法——含义"]
+}
+```
+
+⚠️ `rules` 与 `terms` 都是**字符串数组**，不是对象。
+
 **只输出 JSON**，不要任何解释或代码块标记。"""
 
 
-#: 圣经的必填段落下限（零 LLM 校验）
-_MIN_WORLDVIEW_CHARS = 200
+#: 圣经的体量下限（零 LLM 校验）。
+#:
+#: ## ★ 为什么用**总字数**而不是 `worldview` 单字段字数（实测修正）
+#:
+#: 早先这里只卡 `worldview >= 200 字`，结果真实运行被拒了两次：
+#: 一次 193 字、一次 138 字。但把产物读出来看，**那份圣经是合格的**：
+#: 10 条硬规则、三层力量体系、术语齐全，只是 `worldview` 字段写得紧凑。
+#:
+#: 问题的实质是**我把"信息密度"错当成了"单字段长度"**：
+#: 设定信息可以合理地分布在 `worldview` / `power_system` / `era` / `rules` 里，
+#: 而「世界观」这一节写得紧凑恰恰是好文风（旧项目正是啰嗦被抱怨）。
+#:
+#: ## 标定依据（旧项目 5 本书的真实 bible.txt 实测）
+#:
+#:     book  8: 4231 字    book 18: 7631 字    book 23: 5824 字
+#:     book 11: 6786 字    book 24: 6607 字
+#:     min 4231 / p50 6607 / max 7631
+#:
+#: 取 **1200 字**（约旧项目最小值的 28%）作下限：
+#: 足够拦住"一段话糊弄过去"的薄圣经，又不至于拒掉紧凑但完整的产物。
+#: 不取整 1500 是因为实测一份**合格**的真实产物是 1619 字，
+#: 而收紧到 1500 会让"略紧凑"与"过薄"之间只剩 100 字的余量 ——
+#: 阈值贴着合格样本放，会把正常波动判成失败。
+#: 同时保留 `worldview` 的**宽松**下限（60 字）挡住整段缺失。
+_MIN_TOTAL_CHARS = 1200
+_MIN_WORLDVIEW_CHARS = 60
 _MIN_RULES = 6
 _MIN_TERMS = 4
 
@@ -94,10 +138,17 @@ def validate_bible(bible: BibleOut) -> list[str]:
 
     if not bible.title.strip():
         issues.append("缺书名")
+    # 总字数（★ 见 `_MIN_TOTAL_CHARS` 的标定说明）
+    total = len(bible_to_markdown(bible).strip())
+    if total < _MIN_TOTAL_CHARS:
+        issues.append(
+            f"圣经过薄（合计 {total} 字 < {_MIN_TOTAL_CHARS}）—— "
+            f"长篇需要足够的设定密度（旧项目 5 本书实测 4231~7631 字）"
+        )
     if len(bible.worldview.strip()) < _MIN_WORLDVIEW_CHARS:
         issues.append(
-            f"世界观过薄（{len(bible.worldview.strip())} 字 < {_MIN_WORLDVIEW_CHARS}）"
-            f"—— 长篇需要足够的设定密度"
+            f"世界观一节过短（{len(bible.worldview.strip())} 字 < {_MIN_WORLDVIEW_CHARS}）"
+            f"—— 需要交代世界结构与当前局势"
         )
     if not bible.power_system.strip():
         issues.append(
@@ -114,12 +165,29 @@ def validate_bible(bible: BibleOut) -> list[str]:
             f"术语对照只有 {len(bible.terms)} 条（要求 ≥{_MIN_TERMS}）"
             f"—— 术语是全书用词一致的基础"
         )
-    # 规则不得是人物描述（常见的模型偏题）
-    person_markers = ("勇敢", "善良", "聪明", "坚强", "主角", "他", "她")
-    bad_rules = [
-        r for r in bible.rules
-        if len(r.strip()) < 6 or any(m in r for m in person_markers)
-    ]
+    # 规则不得是**人物描述**（常见的模型偏题）。
+    #
+    # ⚠️ 实测踩过：早先这里用裸的 `"他"/"她"` 做特征词，把
+    #     「手册内容仅对值夜人可见，**他人**阅读将导致遗忘」误判为人物描述
+    #     —— 「他人」是一个正常的世界法则用语。
+    #     过宽的规则会拒掉合法输入，比漏判更糟（旧项目「误报诱人删注释」的同类）。
+    #
+    # 因此改为**更精确**的判据：人物描述的特征是
+    #   · 出现「主角」这类叙述者视角词，或
+    #   · 出现性格形容词，或
+    #   · **以人称代词开头**（「他很勇敢」）—— 世界法则不会这样写
+    person_markers = ("勇敢", "善良", "聪明", "坚强", "主角", "为人")
+    lead_pronoun = re.compile(r"^\s*(他|她|它|他们|她们)\s*[的很是会能]")
+
+    def _looks_like_person(r: str) -> bool:
+        text = r.strip()
+        if len(text) < 6:
+            return True
+        if any(m in text for m in person_markers):
+            return True
+        return bool(lead_pronoun.match(text))
+
+    bad_rules = [r for r in bible.rules if _looks_like_person(r)]
     if bad_rules:
         issues.append(
             f"{len(bad_rules)} 条「硬规则」不像世界法则（过短或含人物描述）："
@@ -207,11 +275,25 @@ async def build_bible(
                 calls += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning("bible LLM failed (attempt %d): %s", attempt + 1, exc)
-            return BibleResult(
-                bible=None, bible_ref="", bible_hash=None,
-                violations=last_issues, llm_calls=calls, ok=False,
-                error=f"圣经生成调用失败：{exc}",
+            last_issues = [f"模型输出无法解析：{str(exc)[:200]}"]
+            # ★ 不在这里放弃：`complete_structured` 已经用尽了它自己的
+            # 修复重试，但**节点层的修复循环**还能换一种问法再试一次。
+            #
+            # 实测踩到：`terms` 形状不符（模型给字典、schema 要数组）时，
+            # `complete_structured` 三次都失败 → 此处直接 `return` →
+            # 整条规划链路挂掉，而模型其实每次都在给出**内容正确**的圣经。
+            # 「调用失败」与「校验失败」应当走同一条修复路径，
+            # 而不是一个重试、一个直接死。
+            if attempt >= max_rounds:
+                break
+            user = (
+                f"【主题】{topic}\n【题材】{genre}\n\n"
+                f"【上一次输出无法解析，请修正后重新输出完整 JSON】\n"
+                + "\n".join(f"- {i}" for i in last_issues)
+                + "\n\n请严格按 schema 的字段类型输出（数组就是数组），"
+                "只输出 JSON 本身。"
             )
+            continue
 
         last_issues = validate_bible(bible)
         if not last_issues:

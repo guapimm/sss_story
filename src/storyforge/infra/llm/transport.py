@@ -206,6 +206,10 @@ class LangChainTransport:
             kwargs["reasoning_effort"] = effort
         if (mt := params.get("max_tokens")) is not None:
             kwargs["max_tokens"] = mt
+        # ★ 原生 JSON 模式（实测：MiMo 加此参数后严格解析**直接通过**，
+        # 不再出现 ```json 包裹 / 缺逗号 / 字符串内裸换行）
+        if params.get("json_mode"):
+            kwargs["response_format"] = {"type": "json_object"}
 
         client = ChatOpenAI(**kwargs)
         self._clients[key] = client

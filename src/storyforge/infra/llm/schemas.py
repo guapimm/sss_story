@@ -26,6 +26,8 @@ hang / entities）→ `entity_classify` 空输出 **100%**。
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from storyforge.domain.enums import (
@@ -38,6 +40,11 @@ from storyforge.domain.enums import (
     LifecycleState,
     RelationKind,
     RelationSentiment,
+)
+from storyforge.infra.llm.coercion import (
+    apply_field_aliases,
+    coerce_records,
+    coerce_str_list,
 )
 
 
@@ -60,7 +67,106 @@ class BibleOut(BaseModel):
     power_system: str = Field(default="", description="力量/能力体系说明")
     era: str = Field(default="", description="时代与地域背景")
     tone: str = Field(default="", description="整体基调与文风")
-    terms: list[str] = Field(default_factory=list, description="术语与专名对照")
+    terms: list[str] = Field(
+        default_factory=list,
+        description='术语与专名对照。每条形如「世界内说法——含义」。'
+        '必须输出**字符串数组**，例如 ["值夜人——承担夜间值守的人"]，'
+        '不要输出 {"值夜人": "承担夜间值守的人"} 这样的对象',
+    )
+
+    @field_validator("rules", mode="before")
+    @classmethod
+    def _normalize_rules(cls, v: Any) -> Any:
+        """`rules` 也接受对象形状（实测 `rules.17` 不是字符串）。
+
+        ## 实测（书 11 第 2 轮，3 次尝试全部失败）
+
+            "rules": [..., {"rule": "…", "exception": "…"}]   ← 第 17 项是对象
+
+        模型在写到最后几条规则时"想补充细节"，于是把一条规则写成了
+        `{"规则": ..., "例外": ...}` 这种带子字段的对象。
+
+        `list[str]` 直接拒它 → 三次修复重试全失败 → **整本书的圣经生成失败**。
+
+        与 `terms` 同源的修法：**归一成文本，而不是拒绝** ——
+        把对象的值拼成一行「键：值；键：值」。信息不丢，格式统一。
+        """
+        return coerce_str_list(v)
+
+    @field_validator("terms", mode="before")
+    @classmethod
+    def _normalize_terms(cls, v: Any) -> Any:
+        """把模型**天然想给的形状**归一成 `list[str]`（详见 `coerce_str_list`）。
+
+        实测（小米 MiMo，连续 3 次）：prompt 说「格式：世界内说法——含义」，
+        模型就给出 `{"值夜人": "承担夜间值守的人", ...}` —— 这是**完全合理**的读法，
+        信息量一模一样。而 `list[str]` 会拒掉它，于是三次重试全失败、节点放弃。
+
+        修法不是"把 prompt 写得更凶"（那只是把冲突推给模型），
+        而是**接受两种等价形状**：信息相同就不该有理由拒绝。
+        """
+        return coerce_str_list(v)
+
+    @field_validator("rules")
+    @classmethod
+    def _rules_not_field_labels(cls, v: list[str]) -> list[str]:
+        """拦住「把**其它字段名当规则写进 rules**」的错位。
+
+        ## 实测（小米 MiMo，第 1 次尝试即出现）
+
+        模型把本该是顶层字段的内容**塞进了 `rules` 数组**：
+
+            "rules": [
+              ...真实的规则...,
+              "era：永恒黄昏时代。档案馆内无自然光照变化…",
+              "tone：冷峻、压抑、充满未知威胁的悬疑基调…",
+              "terms： ["
+            ]
+
+        结果是 `era` / `tone` / `terms` 三个字段**全为空**，
+        而 `rules` 里混进了三段非规则内容。
+
+        ⚠️ schema 层看不出来：`rules` 是 `list[str]`，而 `"era：..."` 确实是
+        一个合法字符串。这类**结构错位**只能靠内容特征识别。
+
+        判据：条目以 `<已知字段名>：` 开头。用**字段名清单**而不是模糊匹配 ——
+        只拦确定的错位，不误伤真规则（真规则不会以 "era：" 开头）。
+        """
+        known = {
+            "title", "worldview", "power_system", "rules", "era", "tone", "terms",
+        }
+        bad = [
+            r for r in v
+            if (head := str(r).split("：", 1)[0].split(":", 1)[0].strip().lower())
+            in known
+        ]
+        if bad:
+            raise ValueError(
+                f"rules 里有 {len(bad)} 条是**其他字段的内容**（以字段名开头）："
+                f"{bad[:2]} —— 请把这些内容放回对应的顶层字段"
+                f"（era / tone / terms），rules 只放世界法则"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _reject_field_misnesting(self) -> BibleOut:
+        """结构自检：内容有没有被塞错字段。
+
+        与上面的 `rules` 检查互补 —— 光看 `rules` 干净不够，
+        还要确认 `era`/`terms` **真的有内容**（错位后它们会空）。
+        旧项目「缺省即通过」的反面：空字段必须报错。
+        """
+        missing: list[str] = []
+        if not (self.era or "").strip():
+            missing.append("era")
+        if len(self.terms) < 1:
+            missing.append("terms")
+        if missing:
+            raise ValueError(
+                f"字段 {missing} 为空 —— 实测模型会把它们的内容写进 rules，"
+                f"导致顶层字段空缺。请确保每个顶层字段都填上内容。"
+            )
+        return self
 
 
 # --------------------------------------------------------------------------- #
@@ -82,8 +188,42 @@ class MilestoneOut(BaseModel):
         description="里程碑在**本卷内**的章序号（从 1 开始，不超过本卷 chapter_count）。"
         "给卷内序号即可，全书号由系统自动换算"
     )
-    key: str = Field(description="里程碑标识")
+    key: str = Field(default="", description="里程碑标识（可留空，代码会补）")
     description: str = Field(default="", description="里程碑内容一句话")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_bare_int(cls, data: Any) -> Any:
+        """接受三种等价写法，全部归一到 `{"chapter_no": N, "description": ...}`：
+
+          · `{"chapter_no": 8, "description": "..."}`   规范形式
+          · `8`                                          裸卷内章号
+          · `"第6章：潜入上海，追踪知识窃取者踪迹"`       ★ 实测最常出现的形态
+          · `"8"`                                        纯数字字符串
+
+        ★ 字符串形态为什么必须接受：实测小米 MiMo **两次**都选择把里程碑写成
+        「第N章：描述」。这不是模型犯错 —— 那是中文小说里表达里程碑最自然的
+        写法，而且它**把章号和描述一起给了**，信息比规范形式还全。
+
+        旧项目 `entity_classify` 空输出 100% 是同一形态：schema 只认一种写法，
+        模型稳定地选另一种，于是一路失败到底。修法是接受等价形状，
+        而不是反复要求模型改（它每次都改不动，白烧 token）。
+
+        `key` 由代码补（见 `series_plan_from_out`），不要求模型编标识符。
+        """
+        if isinstance(data, (int, float)):
+            return {"chapter_no": int(data)}
+        if isinstance(data, str):
+            import re as _re  # noqa: PLC0415
+
+            # 优先取「第N章」里的 N（模型最常这么写）
+            m = _re.search(r"第\s*(\d+)\s*章", data)
+            if not m:
+                m = _re.search(r"(\d+)", data)
+            if m:
+                desc = _re.sub(r"^第\s*\d+\s*章\s*[:：、.。]?\s*", "", data).strip()
+                return {"chapter_no": int(m.group(1)), "description": desc}
+        return data
 
 
 class VolumePlanOut(BaseModel):
@@ -144,6 +284,35 @@ class VolumePlanOut(BaseModel):
             raise ValueError("必须至少给出 1 项（长篇需要横向扩张，见卷级台阶要求）")
         return v
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_shapes(cls, data: Any) -> Any:
+        """字段名漂移 + 的等价形状归一。
+
+        实测：模型给出 `volume_number` 而非 `volume_no`（同义命名），
+        并把 `milestones` 写成 `[8, 16]`（裸章号）。
+        前者是**命名偏好**、后者是**等价简写**，都不该让整条链路失败。
+
+        ⚠️ 只映射**明确同义**的字段名，不做模糊匹配 ——
+        宽泛猜测会把真正的缺字段也"补"上，那比失败更危险。
+        """
+        if not isinstance(data, dict):
+            return data
+        d = apply_field_aliases(data)
+        if "milestones" in d:
+            ms = d["milestones"]
+            # ⚠️ 只包装**数值**形状。
+            #
+            # 早先这里把 str 也一起包装成 `{"chapter_no": "第6章：…"}`，
+            # 结果是**绕过了** `MilestoneOut` 处理字符串的校验器
+            # （它拿到的是 dict 而不是 str），解析照样失败。
+            # 教训：归一化层之间不能互相遮蔽 —— 能自己处理的形状就原样传递。
+            if isinstance(ms, list) and ms and all(
+                isinstance(x, (int, float)) and not isinstance(x, bool) for x in ms
+            ):
+                d["milestones"] = [{"chapter_no": int(x)} for x in ms]
+        return d
+
 
 class SeriesPlanOut(BaseModel):
     """全书规划 —— **必须一次给出全部卷的升级台阶**。
@@ -158,6 +327,12 @@ class SeriesPlanOut(BaseModel):
     total_volumes: int = Field(description="总卷数")
     target_chapters: int = Field(description="全书目标章数")
     volumes: list[VolumePlanOut] = Field(description="**全部卷**的升级台阶")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_field_names(cls, data: Any) -> Any:
+        """字段名漂移归一（实测：`target_total_chapters`、`volume_count`）。"""
+        return apply_field_aliases(data)
 
     @field_validator("volumes")
     @classmethod

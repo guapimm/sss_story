@@ -370,3 +370,104 @@ async def test_build_skeleton_is_idempotent() -> None:
     assert r1.ok and r2.ok
     assert len(transport.calls) == 1
     assert r2.llm_calls == 0
+
+# --------------------------------------------------------------------------- #
+# 台阶落实的**容错匹配**（★ 实测假阳性修复）
+# --------------------------------------------------------------------------- #
+
+
+def test_ladder_mention_tolerates_dropped_modifier() -> None:
+    """★ 实测假阳性：台阶写「档案馆内部保守派值夜人集团」，
+    骨架写「保守派值夜人集团」（省了修饰语）—— **是落实了**。
+
+    原先用整串精确匹配 → 判为未落实 → 逼人去改本来正确的产物，
+    或在反复失败后干脆关掉校验器（旧项目 `enabled: false` 的老路）。
+    """
+    from storyforge.graph.nodes.skeleton_planner import _mentions
+
+    blob = "保守派值夜人集团 腐败档案守护者集团"
+    assert _mentions(blob, "档案馆内部保守派值夜人集团") is True
+
+
+def test_ladder_mention_tolerates_quote_and_order_change() -> None:
+    """台阶写 `外部调查记者组织“记忆之眼”`，骨架写 `'记忆之眼'组织`。"""
+    from storyforge.graph.nodes.skeleton_planner import _mentions
+
+    blob = "'记忆之眼'组织 政府秘密部门"
+    assert _mentions(blob, '外部调查记者组织“记忆之眼”') is True
+
+
+def test_ladder_mention_tolerates_truncated_place_name() -> None:
+    """台阶写「城市边缘的废弃印刷厂（关联规则手册的印刷）」，
+    骨架写「潜入废弃印刷厂」—— 只留了 5 字关键词，**是落实了**。"""
+    from storyforge.graph.nodes.skeleton_planner import _mentions
+
+    blob = "印刷厂之谜 潜入废弃印刷厂 揭露规则手册的印刷源头"
+    assert _mentions(blob, "城市边缘的废弃印刷厂（关联规则手册的印刷）") is True
+
+
+def test_ladder_mention_rejects_unrelated_item() -> None:
+    """★ 容错不等于放水：完全无关的势力必须判为未落实。"""
+    from storyforge.graph.nodes.skeleton_planner import _mentions
+
+    blob = "保守派值夜人集团 记忆之眼组织 废弃印刷厂"
+    assert _mentions(blob, "星海帝国远征军") is False
+    assert _mentions(blob, "洛阳纸贵商会") is False
+
+
+def test_ladder_mention_normalize_removes_embedded_punctuation() -> None:
+    """★ 归一必须**全局**去标点，不是 `str.strip`（它只处理两端）。
+
+    实测踩到：`外部调查记者组织“记忆之眼”` 的引号在**中间**，
+    `strip` 根本去不掉，于是匹配失败。
+    """
+    from storyforge.graph.nodes.skeleton_planner import _normalize_for_match
+
+    assert _normalize_for_match("“记忆之眼”组织（外部）") == "记忆之眼组织外部"
+    assert _normalize_for_match("城市边缘的废弃印刷厂") == "城市边缘的废弃印刷厂"
+
+
+def test_ladder_mention_empty_item_is_ok() -> None:
+    """台阶项为空 → 不构成"未落实"（不是骨架的错）。"""
+    from storyforge.graph.nodes.skeleton_planner import _mentions
+
+    assert _mentions("任意文本", "") is True
+
+
+def test_validate_skeleton_passes_with_reworded_ladder_items() -> None:
+    """★ 端到端：台阶项被改写措辞时，整轮校验仍应通过。
+
+    这是上面几条的集成断言 —— 防的是"单元测试过了但校验器仍报错"。
+    """
+    vol = make_volume(
+        new_factions=["档案馆内部保守派值夜人集团", '外部调查记者组织“记忆之眼”'],
+        new_locations=["档案馆地下深层禁区", "城市边缘的废弃印刷厂（关联规则手册的印刷）"],
+    )
+    sk = good_skeleton(
+        arcs=[
+            ArcOut(key="十三条", kind="core",
+                   description="陈砚在档案馆地下深层禁区逐条验证残页上的十三条规则",
+                   chapter_span=[1, 60]),
+            ArcOut(key="继任", kind="core",
+                   description="陈砚接过值夜簿，成为新的值夜人", chapter_span=[5, 120]),
+            ArcOut(key="周德海", kind="relationship",
+                   description="陈砚与周德海从互相提防到以命相托", chapter_span=[3, 90]),
+            ArcOut(key="裴照", kind="relationship",
+                   description="裴照隔门传话，两人由试探转为同盟", chapter_span=[10, 110]),
+            ArcOut(key="保守派", kind="opposition",
+                   description="保守派值夜人集团要封死档案馆，赌注是楼内住户的性命",
+                   chapter_span=[20, 150]),
+            ArcOut(key="印刷厂之谜", kind="opposition",
+                   description="潜入废弃印刷厂，追查规则手册被篡改的源头，"
+                               "赌注是篡改者抢先找到陈砚",
+                   chapter_span=[40, 180]),
+        ],
+        segments=[
+            "接手值夜，摸清馆内规矩",
+            "接触\u2018记忆之眼\u2019记者，卷入外部调查",
+            "潜入废弃印刷厂取证",
+            "地下深层禁区的门第一次开启",
+        ],
+        factions=["保守派值夜人集团", "\u2018记忆之眼\u2019组织", "档案科", "住户互助会"],
+    )
+    assert validate_skeleton(sk, vol) == []

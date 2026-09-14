@@ -16,16 +16,19 @@ from storyforge.domain.enums import (
     RelationKind,
 )
 from storyforge.infra.llm.schemas import (
+    BibleOut,
     ChapterPlanOut,
     DetailBatchOut,
     EntityMentionOut,
     InjuryUpdateOut,
+    MilestoneOut,
     RelationUpdateOut,
     ReviewResultOut,
     SceneBeatOut,
     SeriesPlanOut,
     VolumePlanOut,
     WorldStateOut,
+    coerce_str_list,
 )
 
 pytestmark = pytest.mark.unit
@@ -316,3 +319,242 @@ def test_field_descriptions_are_present() -> None:
     for cls in (ChapterPlanOut, SceneBeatOut, WorldStateOut, VolumePlanOut):
         for name, field in cls.model_fields.items():
             assert field.description, f"{cls.__name__}.{name} 缺 description"
+
+# --------------------------------------------------------------------------- #
+# 形状归一（★ 实测驱动：真实运行时模型反复用这些形状）
+# --------------------------------------------------------------------------- #
+
+
+def test_terms_accepts_dict_shape() -> None:
+    """★ 实测：prompt 说「格式：世界内说法——含义」，模型就给字典。
+
+    这是**完全合理**的读法（键=说法，值=含义），信息量一模一样。
+    旧行为是三次重试全部失败、节点放弃 —— 白烧 token 而内容其实是对的。
+    """
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="当代",
+        rules=["r" * 10],
+        terms={"值夜人": "承担夜间值守的人", "朱批": "以血为墨改判"},
+    )
+    assert b.terms == ["值夜人——承担夜间值守的人", "朱批——以血为墨改判"]
+
+
+def test_terms_accepts_object_list_shape() -> None:
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="当代", rules=["r" * 10],
+        terms=[{"term": "值夜人", "meaning": "值守的人"}],
+    )
+    assert b.terms == ["值夜人——值守的人"]
+
+
+def test_terms_accepts_plain_list_unchanged() -> None:
+    """规范形状必须原样通过（归一不得改动正确输入）。"""
+    b = BibleOut(title="t", worldview="w" * 250, power_system="p", era="当代",
+                 rules=["r" * 10], terms=["值夜人——值守的人"])
+    assert b.terms == ["值夜人——值守的人"]
+
+
+def test_terms_none_becomes_empty() -> None:
+    b = BibleOut(title="t", worldview="w" * 250, power_system="p", era="当代",
+                 rules=["r" * 10], terms=["占位——保持 terms 非空"])
+    assert isinstance(b.terms, list)
+
+
+def test_coerce_str_list_handles_term_without_meaning() -> None:
+    assert coerce_str_list([{"term": "孤词"}]) == ["孤词"]
+
+
+def test_coerce_str_list_passes_through_non_list() -> None:
+    """非列表非字典 → 原样返回，交给 Pydantic 正常报错（**不吞掉真错误**）。"""
+    assert coerce_str_list(42) == 42
+
+
+@pytest.mark.parametrize("raw,expect", [
+    (8, 8),
+    ("8", 8),
+    ("第6章：潜入上海，追踪知识窃取者踪迹", 6),
+    ("第 12 章 最终对决", 12),
+    ("13", 13),
+])
+def test_milestone_accepts_bare_and_string_forms(raw, expect) -> None:
+    """★ 实测：模型**两次**都把里程碑写成「第N章：描述」。
+
+    那不是模型犯错 —— 那是中文小说里最自然的写法，而且它把章号和描述
+    一起给了，信息比规范形式还全。只认一种写法会让整条规划链路失败。
+    """
+    m = MilestoneOut.model_validate(raw)
+    assert m.chapter_no == expect
+
+
+def test_milestone_keeps_description_from_string_form() -> None:
+    m = MilestoneOut.model_validate("第6章：潜入上海，追踪知识窃取者踪迹")
+    assert "潜入上海" in m.description
+    assert "第6章" not in m.description, "章号前缀应当被剥掉"
+
+
+def test_milestone_key_defaults_empty_and_code_fills_it() -> None:
+    """标识符由**代码**生成，不要求模型编（D-15：模型给局部、代码算全局）。"""
+    assert MilestoneOut.model_validate(8).key == ""
+
+
+def test_volume_plan_accepts_field_name_drift() -> None:
+    """★ 实测：模型给 `volume_number` 而非 `volume_no`（同义命名）。
+
+    单模型下这类命名偏好是**稳定**的 —— 反复重试改不动，只会失败到底。
+    """
+    v = VolumePlanOut.model_validate({
+        "volume_number": 1, "title": "t", "goal": "g",
+        "new_locations": ["a", "b"], "new_factions": ["c", "d"],
+        "antagonist": "x", "power_ceiling": "p", "core_conflict": "c",
+        "escalation_from_prev": "从村斗升级为城战",
+        "old_map_closure": "收尾", "chapter_count": 8,
+        "milestones": [3, 6],
+    })
+    assert v.volume_no == 1
+    assert [m.chapter_no for m in v.milestones] == [3, 6]
+
+
+def test_volume_plan_still_rejects_truly_missing_fields() -> None:
+    """★ 归一只做**形状**转换，不补真正缺失的字段。
+
+    把缺字段也"补"上会让校验器失去意义 —— 那比直接失败更危险。
+    """
+    with pytest.raises(ValidationError):
+        VolumePlanOut.model_validate({
+            "volume_number": 1, "title": "t", "goal": "g",
+            "new_factions": ["c", "d"],           # 缺 new_locations
+            "antagonist": "x", "power_ceiling": "p", "core_conflict": "c",
+            "escalation_from_prev": "从村斗升级为城战",
+            "old_map_closure": "收尾", "chapter_count": 8,
+        })
+
+
+def test_series_plan_accepts_drifted_target_chapters_name() -> None:
+    """`target_total_chapters` → `target_chapters`（实测出现）。"""
+    out = SeriesPlanOut.model_validate({
+        "logline": "x", "total_volumes": 1,
+        "target_total_chapters": 25,
+        "volumes": [{
+            "volume_number": 1, "title": "t", "goal": "g",
+            "new_locations": ["a", "b"], "new_factions": ["c", "d"],
+            "antagonist": "x", "power_ceiling": "p", "core_conflict": "c",
+            "escalation_from_prev": "从村斗升级为城战",
+            "old_map_closure": "收尾", "chapter_count": 25,
+        }],
+    })
+    assert out.target_chapters == 25
+    assert out.total_volumes == 1
+
+def test_milestone_string_form_not_shadowed_by_volume_normalizer() -> None:
+    """★ 回归：卷级归一化**不得遮蔽**里程碑的字符串解析。
+
+    实测踩到：`VolumePlanOut` 的归一器把里程碑字符串预先包成
+    `{"chapter_no": "第6章：…"}`，于是 `MilestoneOut` 的字符串校验器
+    拿到的是 dict 而不是 str —— 解析照样失败。
+
+    教训：**归一化层之间不能互相遮蔽**，能自己处理的形状就原样传递。
+    """
+    from storyforge.infra.llm.schemas import VolumePlanOut as _V
+
+    v = _V.model_validate({
+        "volume_number": 2, "title": "t", "goal": "g",
+        "new_locations": ["a", "b"], "new_factions": ["c", "d"],
+        "antagonist": "x", "power_ceiling": "p", "core_conflict": "c",
+        "escalation_from_prev": "从馆内升级为跨城博弈",
+        "old_map_closure": "收尾", "chapter_count": 80,
+        "milestones": [
+            "第55章：在现实锚点中寻找改写第三条规则的机会。",
+            "第80章：结局。值夜人成为传说，留下神秘注脚。卷终。",
+        ],
+    })
+    assert [m.chapter_no for m in v.milestones] == [55, 80]
+    assert "现实锚点" in v.milestones[0].description
+
+def test_rules_reject_other_field_content() -> None:
+    """★ 实测：模型把 `era`/`tone`/`terms` 的内容塞进了 `rules` 数组。
+
+    schema 层看不出来（`rules` 是 `list[str]`，`"era：..."` 确实是合法字符串），
+    但后果是三个顶层字段**全为空**、rules 里混进非规则内容。
+
+    这类**结构错位**只能靠内容特征识别。
+    """
+    with pytest.raises(ValidationError, match="其他字段的内容"):
+        BibleOut(
+            title="t", worldview="w" * 250, power_system="p", era="当代",
+            rules=["规则一：不可违反", "era：永恒黄昏时代", "tone：冷峻压抑"],
+            terms=["占位——非空"],
+        )
+
+
+def test_rules_accept_normal_content() -> None:
+    """真规则不得被误伤（真规则不会以 "era：" 开头）。"""
+    rules = [
+        "规则一旦写入手册便不可擦除，只能覆盖",
+        "午夜后应答唤名者视为交接完成",
+        "提到 era 这个词也不算错位",
+    ]
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="当代",
+        rules=rules, terms=["占位——非空"],
+    )
+    assert b.rules == rules
+
+
+def test_missing_era_is_rejected() -> None:
+    """★ 错位后 `era` 会为空 —— 「缺省即通过」的反面：空字段必须报错。"""
+    with pytest.raises(ValidationError, match="era"):
+        BibleOut(
+            title="t", worldview="w" * 250, power_system="p",
+            rules=["规则一：不可违反"], terms=["占位——非空"],
+        )
+
+
+def test_missing_terms_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="terms"):
+        BibleOut(
+            title="t", worldview="w" * 250, power_system="p", era="当代",
+            rules=["规则一：不可违反"],
+        )
+
+def test_rules_accepts_object_item_shape() -> None:
+    """★ 实测（书 11 第 2 轮）：`rules` 里混进了一个对象，3 次重试全失败。
+
+        "rules": [..., {"rule": "…", "exception": "…"}]   ← 第 17 项
+
+    模型写到最后几条时"想补充细节"，把一条规则写成带子字段的对象。
+    `list[str]` 直接拒它 → **整本书的圣经生成失败**。
+
+    与 `terms` 同源的修法：归一成文本，而不是拒绝。
+    """
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="当代",
+        rules=[
+            "规则一：不可违反",
+            {"规则": "午夜后不得回应唤名", "例外": "持手册者除外"},
+        ],
+        terms=["占位——非空"],
+    )
+    assert b.rules[0] == "规则一：不可违反"
+    # 多字段对象拼成「键：值；键：值」—— 那是一条规则的多个侧面
+    assert "午夜后不得回应唤名" in b.rules[1]
+    assert "持手册者除外" in b.rules[1]
+
+
+def test_coerce_str_list_single_field_dict_keeps_value() -> None:
+    """单字段 dict：**值**才是内容，键只是标签。
+
+    （`[{"term": "孤词"}]` 这种写法里，"term" 不是内容。）
+    """
+    assert coerce_str_list([{"term": "孤词"}]) == ["孤词"]
+    assert coerce_str_list([{"规则": "不得越线"}]) == ["不得越线"]
+
+
+def test_coerce_str_list_top_level_dict_stays_one_per_pair() -> None:
+    """★ 顶层字典 = 多项对照，每个键值对是**一条**（terms 的天然写法）。
+
+    这与「列表里的多字段对象」（一条规则的多个侧面）是**两种不同形状**，
+    不能混为一谈 —— 实测踩到过。
+    """
+    assert coerce_str_list({"值夜人": "值守的人", "朱批": "改判之权"}) == [
+        "值夜人——值守的人", "朱批——改判之权",
+    ]

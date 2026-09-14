@@ -73,6 +73,14 @@ class ModelCapability:
     cache_mode: CacheMode
     concurrency: int = 1
     default_reasoning_effort: str | None = None
+    #: 是否支持**原生 JSON 模式**（`response_format={"type":"json_object"}`）。
+    #:
+    #: 实测（小米 MiMo）：不加此参数时 JSON 会被 ```json 包裹，
+    #: 中文长文本里还常出现缺逗号 / 字符串内裸换行 —— 事后修复是打地鼠。
+    #: 加了之后**严格解析直接通过**。
+    #:
+    #: 但这是**能力**：不支持的 provider 会直接 400，因此必须声明而非硬编码。
+    supports_json_mode: bool = False
     #: 单价（USD / 1M token）—— 从配置读，**不在代码里硬编码模型名与价格**
     pricing_cached_input: float = 0.0
     pricing_input: float = 0.0
@@ -152,6 +160,17 @@ class ModelRegistry:
     @property
     def models(self) -> list[ModelCapability]:
         return list(self._models)
+
+    @property
+    def default_provider(self) -> str | None:
+        """`providers.toml` 里声明的默认提供方（可能为 None）。
+
+        ★ 必须有公开访问器：早先 CLI 里用 `getattr(reg, "default_provider", None)`
+        去读它 —— 而真实的属性名是 `_default_provider`，于是 `getattr`
+        **永远返回 None**（静默失效，不报错）。这类"读了个不存在的属性"
+        与 `settings.structure_gate.shadow` 是同一个坑。
+        """
+        return self._default_provider
 
     def get_model(self, model_id: str) -> ModelCapability:
         for m in self._models:
@@ -279,6 +298,7 @@ def _parse_capability(raw: dict[str, Any]) -> ModelCapability:
         max_output_tokens=int(raw["max_output_tokens"]),
         supports_structured_output=bool(raw.get("supports_structured_output", False)),
         supports_reasoning=bool(raw.get("supports_reasoning", False)),
+        supports_json_mode=bool(raw.get("supports_json_mode", False)),
         reasoning_control=raw.get("reasoning_control", "none"),
         cache_mode=raw.get("cache_mode", "none"),
         concurrency=int(raw.get("concurrency", 1)),
