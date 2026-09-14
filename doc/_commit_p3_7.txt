@@ -1,0 +1,43 @@
+P3(7/7): LangGraph 图组装 + 协调器接线 —— P3 完成
+
+四张图（graph/graphs/books.py），每张都是**单职责的短图**：
+  bible / volume_plan / skeleton / detail_batch
+
+★ 为什么不是一个图：用户要的三级重叠流水线里，单图的 interrupt() 会
+冻结整个图 —— 确认首章细纲时正在跑的骨架/细纲会被一起冻住，并行就没了。
+这是决策 D-13（图降为工作单元 + 纯 Python 协调器）的唯一理由。
+新增测试直接验证这一点：C-2 挂起期间细纲 worker 必须跑到 DONE。
+
+确认点触发时机（由**节点**按自身语义声明，适配器只翻译不判断）：
+  · C-4 全卷台阶定稿（每次运行 1 次）
+  · C-2 仅**首批**骨架后
+  · C-3 仅**含第 1 章**的细纲批次后
+后续批次不再停下等人 —— 否则每批都等，流水线失去意义。
+
+executor.py：WorkItem → 图 state 的适配器。
+确认点从图输出的 awaiting_confirm 读出；未知标识忽略而非当成已确认。
+
+本轮定位并修复 4 个真实缺陷：
+
+1. volume_planner 读 settings.structure_gate.shadow —— 该字段不存在，
+   首次真实运行必然 AttributeError。修复时**故意不新增该配置项**：
+   shadow（只报告不阻断）本身就是旧项目的失败模式（enabled:false,
+   shadow:true → 400 章挤第 1 卷、412 项 lint error 全部放行），
+   它让「闸门已实现」与「闸门在生效」变成两件事而报表上看不出区别。
+
+2. Orchestrator.queues 只建了 skeleton/detail/chapter → BIBLE/VOLUME_PLAN
+   单元 enqueue 直接 KeyError。改为由 PipelineStage 枚举**派生**
+   （旧项目 ACTIVE_PHASES 手写白名单漏了 architecting → 书永久卡死）。
+   run() 同样改为枚举派生，新增阶段自动被调度。
+
+3. WorkItem 默认幂等键不含 book_id → 两本书共用同一个 LangGraph
+   thread_id（checkpoint 串台）。现为 b{book}:{stage}:v{vol}:{seq}。
+
+4. 契约规则 12 用子串匹配 os.environ → 把文档里提到该词的说明文字也
+   判为违规（首次运行即误报）。改为 AST 判定：误报会诱使人删掉解释性
+   注释，那正是旧项目「教训失传」的路径。
+
+TestTransport 也改为**按节点签名分派**而不是按调用顺序 ——
+协调器里多阶段并发，调用顺序本就不确定（这正是要验证的并行性）。
+
+测试 368 → 387。全部通过，doctor PASS。

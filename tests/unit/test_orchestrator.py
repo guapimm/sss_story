@@ -234,7 +234,7 @@ async def test_invariant3_confirm_does_not_block_other_workers() -> None:
 
     # ★ 关键断言：确认挂起期间，骨架 worker 必须能跑完全部单元
     await orch._run_stage(PipelineStage.SKELETON)
-    skel_done = [k for k in ex.completed if k.startswith("skeleton:")]
+    skel_done = [k for k in ex.completed if ":skeleton:" in k]
     assert len(skel_done) == 3, (
         f"确认期间骨架必须仍在推进（不变量 3），实测骨架完成 {skel_done}"
     )
@@ -409,7 +409,7 @@ async def test_queue_pop_returns_none_when_closed_and_empty() -> None:
 
 async def test_failed_unit_recorded_without_stopping_stage() -> None:
     """单个单元失败不应中断整个阶段（失败隔离）。"""
-    ex = RecordingExecutor(delay=0.005, fail_on={"detail:v1:2"})
+    ex = RecordingExecutor(delay=0.005, fail_on={"b0:detail:v1:2"})
     orch = Orchestrator(ex)
     for it in make_items(PipelineStage.DETAIL, 4):
         orch.enqueue(it)
@@ -426,9 +426,9 @@ async def test_failed_unit_recorded_without_stopping_stage() -> None:
 
 def test_work_item_idempotency_key_is_deterministic() -> None:
     """幂等键必须确定性生成 —— 防 LangGraph `#7417` 静默重放导致重复计费。"""
-    a = WorkItem(stage=PipelineStage.CHAPTER, seq=42, volume_no=2)
-    b = WorkItem(stage=PipelineStage.CHAPTER, seq=42, volume_no=2)
-    assert a.idempotency_key == b.idempotency_key == "chapter:v2:42"
+    a = WorkItem(stage=PipelineStage.CHAPTER, seq=42, volume_no=2, book_id=7)
+    b = WorkItem(stage=PipelineStage.CHAPTER, seq=42, volume_no=2, book_id=7)
+    assert a.idempotency_key == b.idempotency_key == "b7:chapter:v2:42"
     assert a.thread_id == a.idempotency_key, "每单元必须有独立 thread_id"
 
 

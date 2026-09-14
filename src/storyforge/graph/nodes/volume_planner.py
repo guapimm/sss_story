@@ -200,9 +200,18 @@ async def plan_volumes(
     这是**唯一**产出卷级台阶的地方 —— 后续骨架/细纲都受它约束。
     """
     settings = get_settings()
+    # ★ `shadow` **刻意不从配置读**。
+    #
+    # 旧项目 `ultra_structure_config.json` 的指标设计正确，但为
+    # `enabled: false, shadow: true` —— 闸门存在却从不阻断，
+    # 于是 400 章全挤第 1 卷、412 项 lint error 全部放行。
+    #
+    # 「只报告不阻断」这一开关本身就是失败模式：它让"闸门已实现"
+    # 与"闸门在生效"变成两件事，而报表上看不出区别。
+    # 因此 `GateConfig.shadow` 默认 False 且**不暴露为配置项** ——
+    # 要改只能改代码，评审时必然被看见。
     cfg = gate_config or GateConfig(
         enabled=settings.structure_gate.enabled,
-        shadow=settings.structure_gate.shadow,
         new_locations_per_volume_min=settings.structure_gate.new_locations_per_volume_min,
         new_factions_per_volume_min=settings.structure_gate.new_factions_per_volume_min,
         milestone_max_gap=settings.structure_gate.milestone_max_gap,

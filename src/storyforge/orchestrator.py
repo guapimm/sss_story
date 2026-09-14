@@ -61,7 +61,15 @@ class WorkItem:
     #: 批次序号（骨架/细纲）或章号（正文）
     seq: int
     volume_no: int | None = None
-    #: 幂等键：(book_id, stage, volume, seq, attempt)
+    #: ★ 所属书籍 —— **必须进幂等键**，否则两本书会共用同一个 LangGraph
+    #: `thread_id`（checkpoint 串台），且并发两本书时会互相覆盖状态。
+    book_id: int = 0
+    #: 所属运行（可空；用于观测归因）
+    run_id: int | None = None
+    #: 图专属输入（`topic` / `genre` / `batch_start` / `batch_end` / `refs` …）。
+    #: **只放轻量字段与 ref** —— 大产物一律走 `refs`（契约规则 5/19）。
+    payload: dict[str, Any] = field(default_factory=dict)
+    #: 幂等键：(book_id, stage, volume, seq)
     #: 防 LangGraph `#7417`：>180s 的调用会被**静默重放**（53 条评论 open）
     idempotency_key: str = ""
     #: ★ LangGraph thread_id —— 每单元独立 checkpoint 命名空间
@@ -75,9 +83,16 @@ class WorkItem:
     def __post_init__(self) -> None:
         if not self.idempotency_key:
             vol = self.volume_no if self.volume_no is not None else "-"
-            self.idempotency_key = f"{self.stage.value}:v{vol}:{self.seq}"
+            self.idempotency_key = (
+                f"b{self.book_id}:{self.stage.value}:v{vol}:{self.seq}"
+            )
         if not self.thread_id:
             self.thread_id = self.idempotency_key
+
+    # -- 便捷访问（payload 的显式读数，避免调用方各写一遍 get）--------------
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.payload.get(key, default)
 
 
 class UnitExecutor(Protocol):
@@ -88,6 +103,18 @@ class UnitExecutor(Protocol):
     """
 
     async def run(self, item: WorkItem) -> Any: ...
+
+
+#: 从执行结果里读出「待人工确认点」。
+#:
+#: ★ 由**图节点**按自身语义写出（如"只在首批骨架后"、`"只在第一章细纲就绪时"），
+#: 协调器只做翻译，不重复判断 —— 否则同一规则会有两处实现，必然漂移。
+ConfirmPointReader = Callable[[Any], "ConfirmPoint | None"]
+
+
+def _no_confirm(result: Any) -> None:
+    """默认：不识别任何确认点（哑执行器/测试用）。"""
+    return None
 
 
 #: 人工确认回调：返回 True 表示放行，False 表示拒绝/终止
@@ -178,18 +205,20 @@ class Orchestrator:
         *,
         config: OrchestratorConfig | None = None,
         on_confirm: ConfirmHandler | None = None,
+        confirm_point_of: ConfirmPointReader | None = None,
     ) -> None:
         self.executor = executor
         self.config = config or OrchestratorConfig()
         self.on_confirm = on_confirm
+        #: 从执行结果里读确认点。默认不识别（哑执行器场景）。
+        self.confirm_point_of: ConfirmPointReader = confirm_point_of or _no_confirm
 
+        # ★ 队列必须覆盖**全部阶段**（由枚举派生）。
+        # 旧项目 `ACTIVE_PHASES` 是手写白名单，漏了 `architecting`
+        # （`pipeline.py:535` vs `:2009`）→ 架构师阶段崩溃后书**永久卡死**。
+        # 手写白名单会漏，派生不会。
         self.queues: dict[PipelineStage, StageQueue] = {
-            s: StageQueue(stage=s)
-            for s in (
-                PipelineStage.SKELETON,
-                PipelineStage.DETAIL,
-                PipelineStage.CHAPTER,
-            )
+            s: StageQueue(stage=s) for s in PipelineStage
         }
         #: 已完成的单元（供闸门判断）—— key = (stage, volume, seq)
         self.done: dict[tuple[str, int | None, int], WorkItem] = {}
@@ -261,6 +290,14 @@ class Orchestrator:
             item.status = WorkUnitStatus.RUNNING
             try:
                 item.result = await self.executor.run(item)
+                # ★ 图可能声明"到人工确认点了"（由节点按自身语义写出，
+                # 适配器只翻译不判断）。确认**只暂停本 worker**（不变量 3）。
+                point = self.confirm_point_of(item.result)
+                if point is not None:
+                    if not await self.request_confirm(item, point):
+                        # 被拒绝 → 该单元失败，但**其他阶段继续**
+                        continue
+                    item.status = WorkUnitStatus.RUNNING
                 item.status = WorkUnitStatus.DONE
                 self.done[(stage.value, item.volume_no, item.seq)] = item
                 logger.info("unit done: %s", item.idempotency_key)
@@ -293,12 +330,13 @@ class Orchestrator:
         return approved
 
     async def run(self) -> dict[str, Any]:
-        """并发运行三个阶段 worker（阶段间并行、阶段内串行）。"""
+        """并发运行所有阶段 worker（阶段间并行、阶段内串行）。
+
+        ★ worker 由**枚举派生** —— 新增阶段自动被调度，不会漏。
+        """
         self._stop.clear()
         await asyncio.gather(
-            self._run_stage(PipelineStage.SKELETON),
-            self._run_stage(PipelineStage.DETAIL),
-            self._run_stage(PipelineStage.CHAPTER),
+            *(self._run_stage(s) for s in PipelineStage),
             return_exceptions=True,
         )
         return self.report()
@@ -366,6 +404,7 @@ __all__ = [
     "WorkItem",
     "UnitExecutor",
     "ConfirmHandler",
+    "ConfirmPointReader",
     "OrchestratorConfig",
     "Orchestrator",
     "StageQueue",

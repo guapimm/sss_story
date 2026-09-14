@@ -392,14 +392,27 @@ def test_rule12_no_scattered_environ_reads(src_root: Path) -> None:
 
     防的是旧项目 26 个 JSON + 81 个环境变量 + 7 个模块各自缓存，
     且 `.env` 写模型被 `llm_providers.json` **静默覆盖**。
+
+    ⚠️ 用 **AST** 判定而不是子串匹配：子串匹配会把**文档里提到
+    `os.environ` 的说明文字**也判为违规（第一次运行即误报），
+    而误报会诱使人删掉解释性注释 —— 那正是旧项目"教训失传"的路径。
     """
     allowed_files = {"capability.py"}  # 只允许在能力层解析 API key 环境变量
     offenders: list[str] = []
     for path in _iter_py(src_root):
         if path.name in allowed_files or path.name == "config.py":
             continue
-        if "os.environ" in path.read_text(encoding="utf-8"):
-            offenders.append(str(path.relative_to(src_root)))
+        tree = _parse(path)
+        for node in ast.walk(tree):
+            # 形如 os.environ  /  os.environ.get(...)  /  os.getenv(...)
+            if isinstance(node, ast.Attribute) and node.attr == "environ":
+                base = ast.unparse(node.value)
+                if base.split(".")[-1] == "os":
+                    offenders.append(f"{path.relative_to(src_root)}:{node.lineno}")
+            elif isinstance(node, ast.Attribute) and node.attr == "getenv":
+                base = ast.unparse(node.value)
+                if base.split(".")[-1] == "os":
+                    offenders.append(f"{path.relative_to(src_root)}:{node.lineno}")
     assert not offenders, (
         "不得散落直读 os.environ（请用 config.get_settings）：\n  " + "\n  ".join(offenders)
     )
