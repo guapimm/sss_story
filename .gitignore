@@ -46,3 +46,5 @@ data/
 *.tmp
 *.bak
 *.log
+# 提交信息临时文件（PowerShell 内联 -m 会吃掉中文括号，故走 git commit -F 文件）
+doc/_commit_msg.txt
