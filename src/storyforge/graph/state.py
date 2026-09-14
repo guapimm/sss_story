@@ -154,33 +154,78 @@ class DetailState(BookState, total=False):
 class ChapterState(BookState, total=False):
     """单章闭环。
 
-    流程：组装上下文 → 就绪闸门 → 写作 → 打分 → 连续性 →
-          路由 →（按需）审校 → 定向重写 → 抽取 → 归一 → 提交
+    流程：就绪闸门 → 组装上下文 → 写作 → 打分 → 连续性 →
+          路由 →（按需）审校 → 定向重写 → 复检 → 抽取×3 → 提交
+
+    ## 上下文块为什么可以进 state
+
+    写作需要状态表/损伤表/时间线/锚点等**可变尾部**内容。它们都是
+    **有界的**（状态表只渲染本章在场实体、时间线只取近几章、前文尾巴
+    截断到几百字），且**只在本章的一次调用内使用** ——
+    不会像正文/细纲那样随篇幅线性增长。
+
+    ⚠️ 字段名一律用 `*_block` 而不是 `*_text`：
+    契约规则 5 禁止 state 字段名以 `text` 结尾（防大文本混入）。
+    真正的**大产物**（正文、细纲、抽取结果）只以 `*_ref` 出现。
     """
 
     global_no: int
     volume_no: int
     #: 细纲引用（写作前必须就绪）
     plan_ref: str
-    #: 正文引用（写作产出）
+    #: 细纲已就绪到第几章（就绪闸门据此判断）
+    detail_ready_through: int
+    #: 是否卷末章（无条件送审）
+    is_volume_end: bool
+
+    # ── 上下文块（有界；进 prompt 的易变尾部）──
+    volume_block: str
+    segment_block: str
+    states_block: str
+    injuries_block: str
+    timeline_block: str
+    #: 上一章结尾原文（**上游截断到几百字**，不是整章）
+    previous_tail: str
+    #: 细纲渲染文本（场景拍点表，4~8 拍）
+    plan_detail: str
+    style_rules: str
+    #: 既有实体清单 `[(id, 规范名, 别名)]`，供实体归一
+    known_entities: list[tuple[int, str, list[str]]]
+
+    # ── 写作 ──
     prose_ref: str
     prose_hash: str
     prose_chars: int
-    #: 打分卡结果（小 dict，不是大对象）
+    write_problems: list[str]
+
+    # ── 打分（小 dict，不是大对象）──
     scorecard: dict[str, Any]
-    #: 是否需审校
     needs_review: bool
-    #: 审校产物引用
+    review_reason: str
+
+    # ── 审校 ──
     review_ref: str
+    review_score: float
+    review_issues: int
+    review_calls: int
+    revision_applied: bool
+    revision_note: str
+    revision_calls: int
     #: 重写计数（超限触发人工确认 C-7）
     rewrite_count: int
-    #: 抽取产物引用
+
+    # ── 抽取 ──
     extraction_ref: str
-    #: 提交是否成功
+    extraction_calls: int
+    extraction_problems: list[str]
+
+    # ── 提交 ──
     committed: bool
+    commit_note: str
+
     #: 失败原因
     error: str
-    #: 阶段状态
+    #: 阶段状态（`ready` / `not_ready` / `blocked` / `written` / `committed` …）
     status: str
 
 

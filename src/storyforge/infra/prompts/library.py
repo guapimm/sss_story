@@ -142,6 +142,9 @@ class ChapterContext:
     beat_type: str = BeatType.NORMAL.value
     #: 是否换场章
     is_transition: bool = False
+    #: 文风规则（**准稳定层**内容，由 `build_chapter_layers` 放进 semi；
+    #: 此处仅为传递，`ChapterContext` 本身整体进易变层）
+    style_rules: str = ""
 
     def __post_init__(self) -> None:
         if self.foreshadow_plant is None:

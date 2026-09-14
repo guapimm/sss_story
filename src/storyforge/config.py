@@ -145,6 +145,29 @@ class ScorecardSettings(BaseModel):
     ngram: int = 4
 
 
+class WriterSettings(BaseModel):
+    """正文写作（P4-3 长度闭环）。
+
+    ## 为什么上限**不自动重写**
+
+    旧项目实测"重写空转"（`no_improve:6->6`）—— 重写一次的成本等于再写一章，
+    而超长本身是可控缺陷（由打分卡记录并送审）。截断更糟：会切断句子
+    并丢掉章末钩子，而钩子是下一章的入口。
+
+    因此本节的语义是：
+      · 低于 `min_chars` → **续写一次**（只发尾部指令，省钱且不丢已写内容）
+      · 高于 `soft_max`   → **只记录**，交打分卡与审校判定
+    """
+
+    #: 目标字数下限。标定依据：旧项目 47 章 p50 = 5065、p5 = 4149。
+    #: 定在 p5 以上，即"至少不低于旧项目的偏短章"。
+    min_chars: int = 4000
+    #: 硬性上限（超过视为注水）。旧项目 p95 = 6520。
+    soft_max: int = 7000
+    #: 目标下限不足时最多续写几次
+    max_continue: int = 1
+
+
 class StructureGateSettings(BaseModel):
     """卷级扩张度闸门（对策②）。
 
@@ -207,6 +230,7 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     scorecard: ScorecardSettings = Field(default_factory=ScorecardSettings)
+    writer: WriterSettings = Field(default_factory=WriterSettings)
     structure_gate: StructureGateSettings = Field(default_factory=StructureGateSettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
