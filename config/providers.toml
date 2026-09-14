@@ -9,7 +9,13 @@
 # ⚠️ API Key 一律走环境变量（api_key_env），**绝不明文入库**。
 #    旧项目 backend/free_pool.json 含明文 Key 且全仓零读者 —— 不得重演。
 
-default_provider = "deepseek"
+default_provider = "mimo"
+
+[providers.mimo]
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+api_key_env = "MIMO_API_KEY"
+# 小米 MiMo 官方 Token Plan 端点（旧项目生产环境用的就是这个，
+# 因此新旧对比是**同模型对比**，质量差异只能归因于管线而非模型）。
 
 [providers.deepseek]
 base_url = "https://api.deepseek.com/v1"
@@ -31,6 +37,37 @@ api_key_env = "OPENAI_COMPAT_API_KEY"
 #   "budget" —— 支持显式 token 预算
 # cache_mode 取值：
 #   "none" | "automatic_prefix"（自动前缀缓存，如 DeepSeek）| "explicit_control"（如 Anthropic）
+
+[[models]]
+id = "mimo-v2.5"
+provider = "mimo"
+tier = "balanced"              # 写作与规划都走它（单模型策略，与旧项目一致）
+context_window = 1000000       # 旧项目 model_capacity 实测声明值
+max_output_tokens = 131072     # 同上
+supports_structured_output = true
+supports_reasoning = true      # ★ 实测：**无法真正关闭思考**
+reasoning_control = "effort"   # 只认 reasoning_effort
+default_reasoning_effort = "low"
+cache_mode = "automatic_prefix"
+concurrency = 3                # 保守值：Token Plan 是共享额度
+# 单价：Token Plan 用点数（Credits）计费而非美元，权重见
+# `doc/research/08-mimo-integration.md`（hit=2 / miss=100 / output=200）。
+# 因此这里填**点数单价**并标明 currency，避免与美元模型混算。
+pricing = { cached_input = 2.0, input = 100.0, output = 200.0, currency = "CREDITS" }
+
+[[models]]
+id = "mimo-v2.5-pro"
+provider = "mimo"
+tier = "premium"
+context_window = 1000000
+max_output_tokens = 131072
+supports_structured_output = true
+supports_reasoning = true
+reasoning_control = "effort"
+default_reasoning_effort = "low"
+cache_mode = "automatic_prefix"
+concurrency = 1
+pricing = { cached_input = 2.0, input = 100.0, output = 200.0, currency = "CREDITS" }
 
 [[models]]
 id = "deepseek-flash"
@@ -65,14 +102,22 @@ pricing = { cached_input = 0.01, input = 0.30, output = 1.20 }
 # --------------------------------------------------------------------------- #
 # 节点 → 能力需求（路由器据此选模型）
 # --------------------------------------------------------------------------- #
-# 关键：抽取类节点**显式要求不思考**。
-# 旧项目 entity_classify 空输出 100%（32/32）、verifier 62.3%，reasoning 占 completion 99.4%
-# —— 抽取是模式匹配任务，长思考只会烧预算并把输出挤没。
+# 关键：抽取类节点要求**尽量不思考**。
+# 旧项目 entity_classify 空输出 100%（32/32）、verifier 62.3%，
+# reasoning 占 completion 99.4% —— 抽取是模式匹配任务，
+# 长思考只会烧预算并把输出挤没。
+#
+# ⚠️ 实测补充（小米 MiMo v2.5）：它**无法真正关闭思考** ——
+#    `enable_thinking: False` 与 `thinking: False` 都被服务端忽略，
+#    reasoning 仍占 completion 的 **89~92%**（抽取任务实测）。
+#    因此抽取节点声明 `minimize`（取最低档）而不是 `forbidden`，
+#    语义是「在这个模型上尽量少想」，而不是「保证不想」。
+#    `forbidden` 只适用于「本身不思考」或「能真正关掉」的模型。
 
 [nodes.chapter_writer]
 tier = "balanced"
 requires = { supports_structured_output = false, needs_long_output = true }
-thinking = "allowed"           # 正文质量优先；但有输出预算下限保护
+thinking = "allowed"           # 正文质量优先（实测 low 档质量不低于默认档）
 
 [nodes.bible_architect]
 tier = "balanced"
@@ -95,19 +140,19 @@ requires = { supports_structured_output = true }
 thinking = "allowed"
 
 [nodes.scene_extractor]
-tier = "fast"
+tier = "balanced"
 requires = { supports_structured_output = true }
-thinking = "forbidden"         # ★ 抽取不做长思考
+thinking = "minimize"          # ★ 实测无法真关，取最低档
 
 [nodes.entity_resolver]
-tier = "fast"
+tier = "balanced"
 requires = { supports_structured_output = true }
-thinking = "forbidden"
+thinking = "minimize"
 
 [nodes.relation_extractor]
-tier = "fast"
+tier = "balanced"
 requires = { supports_structured_output = true }
-thinking = "forbidden"
+thinking = "minimize"
 
 [nodes.style_critic]
 tier = "balanced"

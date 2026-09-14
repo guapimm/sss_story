@@ -31,7 +31,20 @@ from typing import Any, Literal
 
 from storyforge.config import DEFAULT_CONFIG_DIR, REPO_ROOT
 
-ThinkingMode = Literal["allowed", "forbidden", "required"]
+#: 节点的思考需求。
+#:
+#:   `forbidden` —— 抽取类：**不得思考**。只有「本身不支持思考」或
+#:                  「能真正关掉」的模型才满足。旧项目 `entity_classify`
+#:                  空输出 **100%**、`reasoning/completion` **99.4%**
+#:                  就是思考把输出预算挤没了。
+#:   `minimize`  —— **尽量少想**。用于「想关但关不掉」的模型：
+#:                  实测小米 MiMo v2.5 **无法真正关闭思考**
+#:                  （`enable_thinking: False` 与 `thinking: False` 都被忽略），
+#:                  但 `reasoning_effort="low"` 能把 reasoning 压到较低水位。
+#:                  语义是「取该模型可用的最低思考档」，而不是「保证不想」。
+#:   `allowed`   —— 想不想都行（正文写作：质量优先）。
+#:   `required`  —— 必须想（世界观构建这类需要推理的）。
+ThinkingMode = Literal["allowed", "forbidden", "minimize", "required"]
 ReasoningControl = Literal["none", "effort", "budget"]
 CacheMode = Literal["none", "automatic_prefix", "explicit_control"]
 
@@ -64,6 +77,10 @@ class ModelCapability:
     pricing_cached_input: float = 0.0
     pricing_input: float = 0.0
     pricing_output: float = 0.0
+    #: 计价单位。**必须显式声明** —— 有的 provider 用美元，有的用点数（Credits）。
+    #: 旧项目只有一套 MiMo 点数权重（hit=2 / miss=100 / output=200）却用在
+    #: 占 61% 流量的 deepseek 上 → **跨单位混算**，成本完全失真。
+    pricing_currency: str = "USD"
 
     @property
     def can_cache(self) -> bool:
@@ -160,11 +177,16 @@ class ModelRegistry:
     def _matches(self, model: ModelCapability, req: NodeRequirement) -> bool:
         if req.supports_structured_output and not model.supports_structured_output:
             return False
-        # thinking="forbidden" 要求模型**支持关闭思考**；
-        # supports_reasoning=False 的模型天然满足（它本来就不思考）。
+        # thinking="forbidden" 要求模型**能真正不思考**：
+        #   · supports_reasoning=False  → 天然满足
+        #   · supports_reasoning=True   → 必须能通过 reasoning_control 关掉
         if req.thinking == "forbidden" and model.supports_reasoning:
-            # 支持思考但能通过 reasoning_control 关掉也算合格
             if model.reasoning_control == "none":
+                # 会思考、又没有任何控制手段 —— 无法满足「不得思考」
+                return False
+        # thinking="minimize" 要求模型**至少有一档可调**（想关就关，否则取最低档）
+        if req.thinking == "minimize":
+            if model.supports_reasoning and model.reasoning_control == "none":
                 return False
         if req.thinking == "required" and not model.supports_reasoning:
             return False
@@ -198,16 +220,36 @@ class ModelRegistry:
         """把「节点需求 + 模型能力」翻译成客户端可直接用的调用参数。
 
         返回值示例：
-          {"enable_thinking": False}                        ← 抽取类，强制不思考
-          {"reasoning_effort": "low"}                       ← 支持 effort 档
-          {"reasoning_max_tokens": 4096}                    ← 支持显式预算
+          {"enable_thinking": False}                        ← 抽取类且模型能关思考
+          {"reasoning_effort": "low"}                       ← 取最低思考档
           {}                                               ← 模型不支持思考，无需参数
+
+        ## `minimize` 的语义（实测驱动）
+
+        小米 MiMo v2.5 **无法真正关闭思考** —— 实测 `enable_thinking: False`
+        与 `thinking: False` 都被服务端忽略（reasoning 仍在 12~15 token 以上）。
+        但它认 `reasoning_effort`，且 `"minimal"` 会返回 400（非法值），
+        最低合法档是 `"low"`。
+
+        因此对「想关但关不掉」的模型，策略是**取最低档**而不是假装关掉了。
+        这一点必须诚实建模：如果这里返回 `enable_thinking: False` 而服务端
+        忽略它，我们就会以为抽取节点"不思考"，而账单上的 reasoning 会打脸。
+
+        ⚠️ 旧项目 `reasoning / completion` 实测 **99.4%**（抽取节点）——
+        所以「抽取不要长思考」这个目标本身是对的，只是实现手段受模型限制。
         """
         req = self.requirement_for(node)
         if not model.supports_reasoning:
             return {}
         if req.thinking == "forbidden":
+            if model.reasoning_control == "none":
+                # 不能真正关闭 —— 由 `_matches` 保证这种模型不会被选上
+                return {}
             return {"enable_thinking": False}
+        # `minimize` 与 `allowed` 都用模型可用的最低档；
+        # `allowed` 也取 low 是因为实测 `low` 的**质量不低于**默认档
+        # （见 doc/research/08-mimo-integration.md 的 A/B 结论），
+        # 而默认档在抽取任务上把 91% 的输出预算烧在思考里。
         if model.reasoning_control == "effort":
             return {"reasoning_effort": model.default_reasoning_effort or "low"}
         if model.reasoning_control == "budget":
@@ -244,6 +286,7 @@ def _parse_capability(raw: dict[str, Any]) -> ModelCapability:
         pricing_cached_input=float(pricing.get("cached_input", 0.0)),
         pricing_input=float(pricing.get("input", 0.0)),
         pricing_output=float(pricing.get("output", 0.0)),
+        pricing_currency=str(pricing.get("currency", "USD")),
     )
 
 

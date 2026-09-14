@@ -72,6 +72,7 @@ def pricing_table() -> dict[str, ModelPricing]:
                 cached_input=m.pricing_cached_input,
                 input=m.pricing_input,
                 output=m.pricing_output,
+                currency=m.pricing_currency,
             )
     return table
 

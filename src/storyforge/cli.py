@@ -83,21 +83,31 @@ def run_doctor(*, verbose: bool = False) -> tuple[bool, list[dict[str, Any]]]:
         results.append(
             _check("providers", True, f"{len(reg.models)} models / {len(reg.providers)} providers")
         )
-        # 抽取类节点必须落在「不思考」的模型或显式关闭思考上
+        # 抽取类节点必须「尽量不思考」
+        #
+        # ⚠️ 实测：小米 MiMo v2.5 **关不掉思考**（enable_thinking/thinking 都被忽略），
+        # 因此合格形态有三种：模型本身不思考 / 真能关闭 / 取到最低 effort 档。
+        # 这里按「效果」判定，而不是按某个参数名 —— 参数是实现细节。
         bad: list[str] = []
         for node in ("scene_extractor", "entity_resolver", "relation_extractor"):
             try:
                 m, _ = reg.route(node)
                 policy = reg.thinking_policy_for(node, m)
-                if m.supports_reasoning and policy.get("enable_thinking") is not False:
-                    bad.append(f"{node}->{m.id}")
+                if not m.supports_reasoning:
+                    continue
+                if policy.get("enable_thinking") is False:
+                    continue
+                if policy.get("reasoning_effort") in ("minimal", "low"):
+                    continue
+                bad.append(f"{node}->{m.id} policy={policy}")
             except Exception as exc:  # noqa: BLE001
                 bad.append(f"{node}: {exc}")
         results.append(
             _check(
-                "extractor_thinking_disabled",
+                "extractor_thinking_minimized",
                 not bad,
-                f"违规: {bad}" if bad else "抽取类节点均不思考（旧项目 entity_classify 空输出 100%）",
+                f"违规: {bad}" if bad
+                else "抽取类节点均已取最低思考档（旧项目 entity_classify 空输出 100%）",
             )
         )
     except Exception as exc:  # noqa: BLE001
@@ -552,13 +562,17 @@ def cmd_report(args: argparse.Namespace) -> int:
         print("未读到任何模型单价（检查 config/providers.toml 的 pricing）",
               file=sys.stderr)
         return 1
-    print("模型单价（USD / 1M token），来源：config/providers.toml")
-    print(f"{'模型':<22}{'输入':>8}{'缓存命中':>10}{'输出':>8}")
+    print("模型单价（来源：config/providers.toml）")
+    print(f"{'模型':<22}{'币种':<10}{'输入':>9}{'缓存命中':>11}{'输出':>9}")
     for model_id, p in table.items():
-        print(f"{model_id:<22}{p.input:>8}{p.cached_input:>10}{p.output:>8}")
+        print(f"{model_id:<22}{p.currency:<10}{p.input:>9}{p.cached_input:>11}{p.output:>9}")
     print()
-    print("提示：旧项目实测成本结构为 缓存 0.35% / 输出 77.5% / 输入 22.2%，")
-    print("      因此优化重点在**输出侧**（空输出率、思考预算），而非缓存命中率。")
+    print("⚠️ 币种必须显式区分：Token Plan 用**点数（CREDITS）**，其余用美元。")
+    print("   旧项目只有一套 MiMo 点数权重（hit=2/miss=100/output=200）却用在")
+    print("   占 61% 流量的 deepseek 上 → 跨单位混算，成本完全失真。")
+    print()
+    print("成本结构提示（旧项目实测）：缓存 0.35% / 输出 77.5% / 输入 22.2%")
+    print("   → 优化重点在**输出侧**（空输出率、思考预算），而非缓存命中率。")
     return 0
 
 
@@ -616,7 +630,27 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _force_utf8_console() -> None:
+    """把 stdout/stderr 切到 UTF-8 —— Windows 控制台默认 GBK。
+
+    ⚠️ 这不是洁癖：中文输出在 GBK 控制台上会直接抛 `UnicodeEncodeError`
+    把命令打挂（实测 `report` 因一个 ⚠️ 字符整个崩掉）。
+    本项目是中文优先的，因此入口处强制 UTF-8，而不是到处规避非 ASCII 字符。
+
+    `errors="replace"` 是兜底：即使终端仍不支持，也只把个别字显示成 `?`，
+    而不是让整条命令失败。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):  # pragma: no cover - 非 tty 场景
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_console()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

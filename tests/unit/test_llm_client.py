@@ -225,21 +225,33 @@ async def test_full_usage_marked_native() -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def test_extractor_node_forbids_thinking() -> None:
-    """★ 抽取类节点必须**禁止思考**。
+async def test_extractor_node_minimizes_thinking() -> None:
+    """★ 抽取类节点必须**尽量不思考**。
 
     旧项目 `entity_classify` 空输出 **100%**（32/32）、`verifier` **62.3%**，
     且 `reasoning/completion` 高达 **99.4%** —— 抽取是模式匹配任务，
     长思考只会烧掉输出预算。
+
+    ## 为什么是「尽量」而不是「禁止」
+
+    实测小米 MiMo v2.5 **无法真正关闭思考**：`enable_thinking: False` 与
+    `thinking: False` 都被服务端忽略，reasoning 仍占 completion 的 89~92%。
+    而 `reasoning_effort="minimal"` 返回 400（非法值），最低合法档是 `"low"`。
+
+    因此验收标准是「取该模型可用的最低思考档」，而不是「保证不想」——
+    后者在这个模型上无法达成，假装达成只会让账单打脸。
     """
     client, transport = make_client()
     await client.complete(node="scene_extractor", system="s", user="u")
     params = transport.calls[0]["params"]
-    # 路由到的模型本身不思考（policy 为空），或显式关闭
     model_id = transport.calls[0]["model"]
-    assert params.get("enable_thinking") is False or "flash" in model_id, (
-        f"抽取节点必须不思考，实测 model={model_id} params={params}"
+    # 三种合格形态：模型本身不思考 / 显式关闭 / 取最低档
+    ok = (
+        not params                      # 模型不支持思考
+        or params.get("enable_thinking") is False
+        or params.get("reasoning_effort") in ("minimal", "low")
     )
+    assert ok, f"抽取节点必须尽量不思考，实测 model={model_id} params={params}"
 
 
 async def test_unknown_node_raises_config_error() -> None:
@@ -337,11 +349,26 @@ async def test_record_has_all_diagnostic_fields() -> None:
 
 
 async def test_model_attribution_is_actual_model_not_assumed() -> None:
-    """每个节点的记录必须带**实际使用的模型**（防 model-blind 成本）。"""
+    """每个节点的记录必须带**实际使用的模型**（防 model-blind 成本）。
+
+    ⚠️ 不断言"不同节点必须路由到不同模型"：当前是**单模型策略**
+    （`mimo-v2.5` 承担全部节点，与旧项目生产环境一致）。
+    那会让测试把「碰巧配了两个模型」当成约束 —— 配置一变就假失败。
+
+    这里断言的是**归因正确性**：记录的 model 必须等于路由实际选出的模型。
+    """
+    from storyforge.infra.llm.capability import get_registry
+
     client, _ = make_client()
     await client.complete(node="chapter_writer", system="s", user="u")
     await client.complete(node="scene_extractor", system="s", user="u")
-    models = {r.node_name: r.model for r in client.records if r.status is CallStatus.OK}
-    assert models["chapter_writer"] != models["scene_extractor"], (
-        "不同档位节点应路由到不同模型（能力声明驱动）"
-    )
+
+    reg = get_registry()
+    for r in client.records:
+        if r.status is not CallStatus.OK:
+            continue
+        expected, _ = reg.route(r.node_name)
+        assert r.model == expected.id, (
+            f"{r.node_name} 记录的是 {r.model}，但路由选的是 {expected.id} "
+            f"—— 成本归因必须用**实际模型**"
+        )

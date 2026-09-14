@@ -183,7 +183,7 @@ def test_extract_text_never_returns_none_repr() -> None:
 
 def test_missing_api_key_raises_explicitly(monkeypatch) -> None:
     """★ 缺 key 必须**显式报错**，不静默失败。"""
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
     reg = load_registry()
     model, provider = reg.route("chapter_writer")
     t = LangChainTransport(reg)
@@ -191,33 +191,42 @@ def test_missing_api_key_raises_explicitly(monkeypatch) -> None:
         t._build(model, provider, {})
 
 
-def test_thinking_forbidden_is_satisfied_by_non_reasoning_model(monkeypatch) -> None:
-    """★ 抽取节点必须落在「不会思考」的模型上。
-
-    两种满足方式都正确：
-      · 模型本身不支持思考（`supports_reasoning=False`）→ 无需参数
-      · 模型支持思考但能关掉 → 必须下发 `enable_thinking=False`
+def test_extractors_get_lowest_available_thinking(monkeypatch) -> None:
+    """★ 抽取节点必须拿到**该模型可用的最低思考档**。
 
     旧项目 `entity_classify` 空输出 **100%**、`reasoning/completion` **99.4%**
     —— 抽取是模式匹配任务，长思考只会烧预算并把输出挤没。
 
-    ⚠️ 断言的是**最终效果**（该节点不会思考），不是某个具体参数名：
-    参数是实现细节，效果才是约束。
+    ## 为什么断言的不是「完全不思考」
+
+    实测小米 MiMo v2.5 **关不掉思考**：`enable_thinking: False` 与
+    `thinking: False` 都被服务端忽略；`reasoning_effort="minimal"` 返回 400。
+    最低合法档是 `"low"`。
+
+    所以合格形态有三种，断言的是**取到最低档**这个效果：
+      · 模型不支持思考（`supports_reasoning=False`）→ 无需参数
+      · 支持思考且能关 → 必须下发 `enable_thinking=False`
+      · 支持思考且关不掉 → 必须取 effort 的最低合法档
+
+    假装"已关闭"而服务端忽略它，只会让账单上的 reasoning 打脸。
     """
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("MIMO_API_KEY", "test-key")
     reg = load_registry()
     for node in ("scene_extractor", "entity_resolver", "relation_extractor"):
         model, _ = reg.route(node)
         policy = reg.thinking_policy_for(node, model)
-        will_think = model.supports_reasoning and policy.get("enable_thinking") is not False
-        assert not will_think, (
-            f"{node} 会思考（model={model.id} supports_reasoning="
-            f"{model.supports_reasoning} policy={policy}）—— 抽取节点不得思考"
+        if not model.supports_reasoning:
+            continue                                  # 天然不想
+        if policy.get("enable_thinking") is False:
+            continue                                  # 真关掉了
+        assert policy.get("reasoning_effort") in ("minimal", "low"), (
+            f"{node}（{model.id}）既没有关闭思考，也没有取最低档：policy={policy}"
+            f" —— 抽取节点必须尽量不思考"
         )
 
 
 def test_max_tokens_passed_through(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("MIMO_API_KEY", "test-key")
     reg = load_registry()
     model, provider = reg.route("chapter_writer")
     t = LangChainTransport(reg)
@@ -227,7 +236,7 @@ def test_max_tokens_passed_through(monkeypatch) -> None:
 
 def test_client_is_cached_by_key(monkeypatch) -> None:
     """同一 (provider, model, params) 只建一次连接池。"""
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("MIMO_API_KEY", "test-key")
     reg = load_registry()
     model, provider = reg.route("chapter_writer")
     t = LangChainTransport(reg)
