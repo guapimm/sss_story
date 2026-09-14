@@ -232,14 +232,16 @@ async def plan_volumes(
 
     for attempt in range(max_rounds + 1):
         try:
-            out, _ = await client.complete_structured(
+            out, call = await client.complete_structured(
                 node="volume_planner",
                 system=VOLUME_PLANNER_SYSTEM,
                 user=user,
                 schema=SeriesPlanOut,
                 context=ctx,
             )
-            calls += 1
+            # ★ 幂等命中不计入 llm_calls（未真正调用 provider，算进去会虚高成本）
+            if not call.from_cache:
+                calls += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning("volume plan LLM failed (attempt %d): %s", attempt + 1, exc)
             return VolumePlanResult(

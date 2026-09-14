@@ -74,6 +74,11 @@ tier = "balanced"
 requires = { supports_structured_output = false, needs_long_output = true }
 thinking = "allowed"           # 正文质量优先；但有输出预算下限保护
 
+[nodes.bible_architect]
+tier = "balanced"
+requires = { supports_structured_output = true }
+thinking = "allowed"           # 世界观构建需要推理
+
 [nodes.volume_planner]
 tier = "balanced"
 requires = { supports_structured_output = true }
