@@ -1,62 +1,28 @@
 {
  "book_id": 16,
- "lint_issues": [
-  "第2章：地点跳变：本章结束于「陆沉的独立办公室」，下一章开始于「市局刑侦支队第一会议室」（须写出可叙述的过渡与动机，否则就是硬切）",
-  "第5章：地点跳变：本章结束于「复核室」，下一章开始于「陆沉独立办公室/韩明办公室」（须写出可叙述的过渡与动机，否则就是硬切）"
+ "lint_issues": [],
+ "detail_error": "",
+ "detail_plans": 15,
+ "detail_refs": [
+  "books/16/plans/00001.json",
+  "books/16/plans/00002.json",
+  "books/16/plans/00003.json",
+  "books/16/plans/00004.json",
+  "books/16/plans/00005.json",
+  "books/16/plans/00006.json",
+  "books/16/plans/00007.json",
+  "books/16/plans/00008.json",
+  "books/16/plans/00009.json",
+  "books/16/plans/00010.json",
+  "books/16/plans/00011.json",
+  "books/16/plans/00012.json",
+  "books/16/plans/00013.json",
+  "books/16/plans/00014.json",
+  "books/16/plans/00015.json"
  ],
- "detail_error": "细纲在 3 次尝试后仍未通过 lint（2 章有问题）",
- "detail_plans": 0,
- "detail_refs": [],
  "expected": 15,
  "batch_size": 5,
- "last_plans_ref": "books/16/debug/plans_failed_00001-00005.json",
- "adjacent_pairs": [
-  {
-   "a": 1,
-   "b": 2,
-   "exit_location": "陆沉的独立办公室",
-   "entry_location": "市局刑侦支队第一会议室",
-   "b_is_transition": false,
-   "b_beat_type": "normal",
-   "shared_tokens": [
-    "室"
-   ]
-  },
-  {
-   "a": 2,
-   "b": 3,
-   "exit_location": "陆沉的独立办公室",
-   "entry_location": "市局刑侦支队第三会议室（专用复核室）",
-   "b_is_transition": true,
-   "b_beat_type": "turning",
-   "shared_tokens": [
-    "室"
-   ]
-  },
-  {
-   "a": 3,
-   "b": 4,
-   "exit_location": "复核室内",
-   "entry_location": "复核室/实验室（多点）",
-   "b_is_transition": true,
-   "b_beat_type": "normal",
-   "shared_tokens": [
-    "复",
-    "室",
-    "核"
-   ]
-  },
-  {
-   "a": 4,
-   "b": 5,
-   "exit_location": "复核室",
-   "entry_location": "陆沉独立办公室/韩明办公室",
-   "b_is_transition": false,
-   "b_beat_type": "turning",
-   "shared_tokens": [
-    "室"
-   ]
-  }
- ],
- "transition_rate": 0.5
+ "last_plans_ref": "",
+ "adjacent_pairs": [],
+ "transition_rate": null
 }
