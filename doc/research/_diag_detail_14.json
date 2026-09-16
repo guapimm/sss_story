@@ -1,0 +1,33 @@
+{
+ "book_id": 14,
+ "lint_issues": [],
+ "detail_error": "",
+ "detail_plans": 20,
+ "detail_refs": [
+  "books/14/plans/00001.json",
+  "books/14/plans/00002.json",
+  "books/14/plans/00003.json",
+  "books/14/plans/00004.json",
+  "books/14/plans/00005.json",
+  "books/14/plans/00006.json",
+  "books/14/plans/00007.json",
+  "books/14/plans/00008.json",
+  "books/14/plans/00009.json",
+  "books/14/plans/00010.json",
+  "books/14/plans/00011.json",
+  "books/14/plans/00012.json",
+  "books/14/plans/00013.json",
+  "books/14/plans/00014.json",
+  "books/14/plans/00015.json",
+  "books/14/plans/00016.json",
+  "books/14/plans/00017.json",
+  "books/14/plans/00018.json",
+  "books/14/plans/00019.json",
+  "books/14/plans/00020.json"
+ ],
+ "expected": 20,
+ "batch_size": 5,
+ "last_plans_ref": "",
+ "adjacent_pairs": [],
+ "transition_rate": null
+}

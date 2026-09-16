@@ -57,6 +57,57 @@
     "detail:continuity",
     "detail:continuity"
    ]
+  },
+  {
+   "book_id": 14,
+   "genre": "scifi",
+   "topic": "硬科幻：深空补给站的最后一名维护员，发现站内 AI 在伪造地球的通讯",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 4,
+   "repair_rounds": 0,
+   "skeleton_ok": true,
+   "detail_ok": true,
+   "detail_count": 20,
+   "health_beats": 0,
+   "seconds": 964.9367758999579,
+   "failures": []
+  },
+  {
+   "book_id": 15,
+   "genre": "history",
+   "topic": "历史架空：边关小城的文书吏，在两国议和的前夜发现军报被人调换",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 4,
+   "repair_rounds": 0,
+   "skeleton_ok": true,
+   "detail_ok": true,
+   "detail_count": 20,
+   "health_beats": 0,
+   "seconds": 1131.0411963000079,
+   "failures": []
+  },
+  {
+   "book_id": 16,
+   "genre": "mystery",
+   "topic": "现代悬疑：一桩十二年前的旧案重开，唯一的目击者如今是负责此案的警官",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": false,
+   "volumes": 0,
+   "repair_rounds": 6,
+   "skeleton_ok": false,
+   "detail_ok": false,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 136.70560869999463,
+   "failures": [
+    "volume:milestones",
+    "volume:milestones"
+   ]
   }
  ],
  "failures": {
@@ -74,6 +125,10 @@
    13,
    13,
    13
+  ],
+  "volume:milestones": [
+   16,
+   16
   ]
  },
  "failures_books": {
@@ -88,6 +143,9 @@
   ],
   "detail:continuity": [
    13
+  ],
+  "volume:milestones": [
+   16
   ]
  }
 }
