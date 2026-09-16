@@ -121,6 +121,23 @@ class ArtifactStore:
         return ArtifactRef(f"books/{book_id}/debug/skeleton_failed_v{volume_no:03d}.json")
 
     @staticmethod
+    def failed_plans_key(book_id: int, start: int, end: int) -> ArtifactRef:
+        """**未通过 lint** 的细纲批次（诊断用，不参与业务读取）。
+
+        与 `failed_skeleton_key` 同一策略与同一理由：
+        `plan_key` 只在成功批次写，失败批次**刻意不落盘**
+        （半成品不该被下游读到 —— 这是对的）。
+        但"什么都不留"会让诊断无从下手：实测想看报「地点跳变」那一章的
+        `is_transition` / `beat_type` / 场景拍点，`plans/00012.json`
+        **根本不存在**，只能靠猜。
+
+        放在 `debug/` 下，与业务产物 `plans/` **严格分离**。
+        """
+        return ArtifactRef(
+            f"books/{book_id}/debug/plans_failed_{start:05d}-{end:05d}.json"
+        )
+
+    @staticmethod
     def review_key(book_id: int, global_no: int) -> ArtifactRef:
         return ArtifactRef(f"books/{book_id}/reviews/{global_no:05d}.json")
 

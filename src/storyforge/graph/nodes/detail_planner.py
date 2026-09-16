@@ -167,6 +167,21 @@ class DetailBatchResult:
     llm_calls: int = 0
     ok: bool = False
     error: str | None = None
+    #: ★ **最后一轮未通过 lint** 的产物（失败时才有值）。
+    #:
+    #: ## 为什么必须回传（实测踩到，与 `SkeletonResult.last_skeleton` 同一类）
+    #:
+    #: 失败批次**不落盘**（这是设计正确的行为：半成品不该被下游读到）。
+    #: 但诊断时去读产物文件，读到的是**上一批成功**的章节，甚至读不到 ——
+    #: 于是无法回答"报警那一章到底怎么写的、它有没有声明换场"。
+    #:
+    #: 实测：书 16 第 12 章报「地点跳变」，我想看它的
+    #: `is_transition` / `beat_type` / 场景拍点，结果 `plans/00012.json`
+    #: 根本不存在 —— **只能靠猜**。而"猜"正是本文件反复警告的过拟合入口。
+    #:
+    #: ⚠️ 只放内存、不进 state（State 不得含大文本，契约规则 5）；
+    #: 图节点会把它按需落盘到 `debug/`。
+    last_plans: dict[int, ChapterPlan] = field(default_factory=dict)
 
     @property
     def chapters(self) -> list[ChapterPlan]:
@@ -210,6 +225,11 @@ def chapter_plan_from_out(
             obstacle=s.obstacle,
             outcome=s.outcome,
             why_now=s.why_now,
+            # ★ 这两个字段原先被**丢掉**了 —— prompt 要求填、schema 也声明了，
+            #   但构造领域对象时没取，于是场景层面的地点/人物信息
+            #   在进入领域模型的瞬间就没了（实测发现，见 `SceneBeat` 注释）。
+            location_name=(s.location or "").strip(),
+            participant_names=[str(x).strip() for x in (s.participants or []) if str(x).strip()],
         )
         for i, s in enumerate(out.scenes)
     ]
@@ -433,6 +453,10 @@ def plan_to_dict(plan: ChapterPlan) -> dict:
                 "obstacle": s.obstacle,
                 "outcome": s.outcome,
                 "why_now": s.why_now,
+                # ★ 场景地点/人物也要落盘 —— 否则落盘再读回就丢了，
+                #   下游（审校/连续性）在**读回后**同样看不到（实测发现）
+                "location_name": s.location_name,
+                "participant_names": list(s.participant_names),
             }
             for s in plan.scenes
         ],
@@ -498,6 +522,8 @@ def plan_from_dict(d: dict) -> ChapterPlan:
                 obstacle=s.get("obstacle", ""),
                 outcome=s.get("outcome", ""),
                 why_now=s.get("why_now", ""),
+                location_name=s.get("location_name", ""),
+                participant_names=list(s.get("participant_names", [])),
             )
             for i, s in enumerate(d.get("scenes", []))
         ],
@@ -660,6 +686,7 @@ async def build_detail_batch(
 
     calls = 0
     last_issues: dict[int, list[str]] = {}
+    last_plans: dict[int, ChapterPlan] = {}
 
     for attempt in range(max_rounds + 1):
         user = _detail_user_prompt(
@@ -683,6 +710,7 @@ async def build_detail_batch(
             return DetailBatchResult(
                 lint_issues=last_issues, llm_calls=calls, ok=False,
                 error=f"细纲生成调用失败：{exc}",
+                last_plans=last_plans,
             )
 
         try:
@@ -712,6 +740,8 @@ async def build_detail_batch(
                 plans=plans, lint_issues={}, health_beats_injected=injected,
                 llm_calls=calls, ok=True,
             )
+        # ★ 记下**这一轮**的产物（失败不落盘，诊断只能靠它）
+        last_plans = plans
         logger.info(
             "detail lint failed (round %d): %d chapters with issues",
             attempt + 1, len(last_issues),
@@ -725,6 +755,8 @@ async def build_detail_batch(
             f"细纲在 {max_rounds + 1} 次尝试后仍未通过 lint"
             f"（{len(last_issues)} 章有问题）"
         ),
+        # ★ 带上**最后一轮**的产物，供诊断（见字段注释）
+        last_plans=last_plans,
     )
 
 

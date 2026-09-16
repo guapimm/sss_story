@@ -158,6 +158,14 @@ class DetailState(BookState, total=False):
     detail_error: str
     #: 本批内存中产出的计划数（小标量诊断；失败清空时为 0）
     detail_plans: int
+    #: ★ 失败批次那**当轮**产物的引用（诊断用；成功时无此键）。
+    #:
+    #: 失败批次刻意不写 `plans/`（半成品不该被下游读到），
+    #: 但"什么都不留"会让诊断无从下手 —— 实测想查报「地点跳变」那章的
+    #: `is_transition`，文件根本不存在，只能靠猜。
+    #:
+    #: ⚠️ 存 **ref** 而非内容：规则 5 禁止 State 含大文本。
+    last_plans_ref: str
     awaiting_confirm: str
 
 

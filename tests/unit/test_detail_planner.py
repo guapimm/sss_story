@@ -575,6 +575,68 @@ async def test_build_detail_batch_gives_up_after_max_rounds() -> None:
     assert "未通过 lint" in (result.error or "")
 
 
+async def test_failed_round_plans_are_returned_for_diagnosis() -> None:
+    """★ 失败时也要拿得到**当轮**产物 —— 诊断陷阱回归。
+
+    ## 实测踩到的坑
+
+    失败批次**刻意不落盘**（半成品不该被下游读到，这个行为是对的）。
+    但"什么都不留"会让诊断无从下手：
+
+        书 16 第 12 章报「地点跳变」，
+        想查它的 `is_transition` / `beat_type` / 场景拍点，
+        结果 `plans/00012.json` **根本不存在** —— 只能靠猜。
+
+    而"猜"正是本项目反复警告的过拟合入口（D-16）。
+    与 `SkeletonResult.last_skeleton` 是**同一类**修复。
+    """
+    bad = batch(4)
+    bad.chapters[1].title = bad.chapters[0].title
+    client, _ = make_client([bad.model_dump_json()])
+
+    result = await build_detail_batch(
+        client, book_id=1, volume=volume(), bible_text="x",
+        batch_start=1, batch_end=4, max_rounds=1,
+    )
+    assert result.ok is False
+    # `plans` 仍为空（失败批次不对外交付 —— 语义不变）
+    assert result.plans == {}
+    # ★ 但诊断用的当轮产物可拿到
+    assert result.last_plans, "失败轮的产物必须可拿到（否则无法归因）"
+    assert len(result.last_plans) == 4
+    # 内容必须是真的（能看出报警章怎么写的）
+    assert all(p.title for p in result.last_plans.values())
+
+
+async def test_success_does_not_carry_failed_round_plans() -> None:
+    """成功时 `last_plans` 留空 —— 成功路径不该带诊断包袱。"""
+    bad = batch(4)
+    bad.chapters[1].title = bad.chapters[0].title
+    client, _ = make_client([bad.model_dump_json(), batch(4).model_dump_json()])
+
+    result = await build_detail_batch(
+        client, book_id=1, volume=volume(), bible_text="x",
+        batch_start=1, batch_end=4, max_rounds=2,
+    )
+    assert result.ok
+    assert result.last_plans == {}
+
+
+def test_failed_plans_key_is_under_debug_not_business_path() -> None:
+    """★ 失败产物必须落在 `debug/` 下，与业务产物 `plans/` 严格分离。
+
+    防的是：某节点误把 debug 产物当正常细纲读进来续跑，
+    于是"上一批失败的东西"变成了"这一批的输入"。
+    """
+    ref = ArtifactStore.failed_plans_key(16, 11, 15)
+    assert ref.key == "books/16/debug/plans_failed_00011-00015.json"
+    assert "/debug/" in ref.key
+    # 与业务产物**不是同一目录**（否则会互相覆盖）
+    assert "/plans/" not in ref.key
+    assert ref.key != ArtifactStore.plan_key(16, 11).key
+
+
+
 async def test_build_detail_batch_prompt_carries_previous_exit() -> None:
     """★ 前后锚点：上一章出口状态必须进 prompt（否则章间必然断裂）。"""
     client, transport = make_client([batch(2).model_dump_json()])

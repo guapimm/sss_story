@@ -58,6 +58,7 @@ from storyforge.graph.nodes.bible_architect import (
 from storyforge.graph.nodes.detail_planner import (
     build_detail_batch,
     persist_plan,
+    plan_to_dict,
 )
 from storyforge.graph.nodes.skeleton_planner import (
     build_skeleton,
@@ -323,7 +324,7 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
                 int(state["batch_end"]), result.error,
                 sorted(result.lint_issues), len(result.plans),
             )
-            return {
+            out_fail: dict[str, Any] = {
                 "lint_issues": [
                     f"第{n}章：{i}"
                     for n, issues in sorted(result.lint_issues.items())
@@ -332,6 +333,24 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
                 "detail_error": result.error or "",
                 "detail_plans": len(result.plans),
             }
+            # ★ 把**当轮**未通过的产物落盘到 `debug/`，供诊断。
+            #   失败批次不落 `plans/`（半成品不该被下游读到，这是对的），
+            #   但不落任何东西会让"那一章到底怎么写的"**无从查证** ——
+            #   实测踩到：想看第 12 章的 is_transition，文件根本不存在。
+            #   与 `failed_skeleton_key` 同一策略：放 `debug/`，不是业务产物。
+            if result.last_plans:
+                ref_dbg = deps.store.write_json(
+                    ArtifactStore.failed_plans_key(
+                        book_id, int(state["batch_start"]),
+                        int(state["batch_end"]),
+                    ),
+                    {
+                        str(n): plan_to_dict(p)
+                        for n, p in sorted(result.last_plans.items())
+                    },
+                )
+                out_fail["last_plans_ref"] = ref_dbg.key
+            return out_fail
         new_refs = [
             persist_plan(deps.store, book_id, result.plans[n])
             for n in sorted(result.plans)

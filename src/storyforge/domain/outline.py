@@ -185,7 +185,25 @@ class SceneBeat:
     #: 本章第几个场景（0-based）—— 伤势节拍的 `scene_seq` 指向它
     seq: int
     location_entity_id: int | None = None
+    #: ★ 场景**地点名**（细纲阶段用名，抽取落地后由解析器替换为 ID）。
+    #:
+    #: ## 为什么必须存它（实测发现的数据丢失）
+    #:
+    #: prompt 明确要求每个拍点给 `location`，schema（`SceneBeatOut.location`）
+    #: 也声明了这个字段 —— 但 `chapter_plan_from_out` 构造 `SceneBeat` 时
+    #: **只取了 goal/obstacle/outcome/why_now，把 location 丢掉了**。
+    #:
+    #: 后果：**场景层面的地点信息在进入领域模型时就被丢弃**，
+    #: 下游（连续性检查、审校、"全书困在一处"检测）全都看不到
+    #: "这一章里的人到底在哪儿走动"。实测诊断书 16 时才发现 ——
+    #: 想核对"报警那一章是否真的换了地方"，无处可查。
+    #:
+    #: 这与旧项目 `entry_state` 填充率仅 13% 是同一类问题：
+    #: **要求模型填了，却在代码里丢掉** —— 模型白做，链路白烧 token。
+    location_name: str = ""
     participant_entity_ids: list[int] = field(default_factory=list)
+    #: 在场人物**名**（细纲阶段用，理由同 `location_name`）
+    participant_names: list[str] = field(default_factory=list)
     #: 谁想做什么
     goal: str = ""
     #: 阻碍

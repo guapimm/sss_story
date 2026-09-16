@@ -1,0 +1,31 @@
+{
+ "results": [
+  {
+   "book_id": 16,
+   "genre": "mystery",
+   "topic": "现代悬疑：一桩十二年前的旧案重开，唯一的目击者如今是负责此案的警官",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 3,
+   "repair_rounds": 0,
+   "skeleton_ok": true,
+   "detail_ok": false,
+   "detail_count": 10,
+   "health_beats": 0,
+   "seconds": 545.7746985999984,
+   "failures": [
+    "detail:error:细纲在 3 次尝试后仍未通过 lint（1 章有问题）",
+    "detail:continuity"
+   ]
+  }
+ ],
+ "failures": {
+  "detail:error:细纲在 3 次尝试后仍未通过 lint（1 章有问题）": [
+   16
+  ],
+  "detail:continuity": [
+   16
+  ]
+ }
+}

@@ -387,6 +387,7 @@ async def run_one(
         detail_error = ""
         beats = 0
         detail_plans = 0
+        last_plans_ref = ""
         for start in range(1, n + 1, batch_size):
             end = min(start + batch_size - 1, n)
             out = await build_detail_batch_graph(deps).ainvoke(
@@ -404,6 +405,9 @@ async def run_one(
             beats += int(out.get("health_beats_injected") or 0)
             if out.get("lint_issues"):
                 lint += list(out["lint_issues"])
+            # ★ 记下失败批次的 debug ref（诊断时能读到**当轮**产物）
+            if out.get("last_plans_ref"):
+                last_plans_ref = str(out["last_plans_ref"])
             if out.get("detail_error"):
                 detail_error = str(out["detail_error"])
                 break  # 一批失败即停（后续批次依赖前面，继续没意义）
@@ -420,19 +424,38 @@ async def run_one(
         # ★ A-2 诊断（只加诊断不动逻辑）：落原始 lint 全量，供修连续性前看数据。
         # D-16：先看是几本书的共性，再定放宽还是收紧。
         if diag:
-            from storyforge.graph.nodes.detail_planner import load_plan
+            from storyforge.graph.nodes.detail_planner import plan_from_dict
+
+            # ★ 合并"已落盘的成功章节"与"失败批次那一轮的 debug 产物"。
+            #
+            # 为什么必须合并：失败批次**刻意不落盘**，于是读 `plans/`
+            # 会在报警那一章**断掉** —— 而报警章恰恰是唯一要看的那一章。
+            # 实测踩到：想看第 12 章的 `is_transition`，文件根本不存在。
+            plans_by_no: dict[int, object] = {}
+            for no in range(1, n + 1):
+                try:
+                    plans_by_no[no] = load_plan(store, bid, no)
+                except Exception:  # noqa: BLE001
+                    pass
+            if last_plans_ref:
+                try:
+                    raw = json.loads(store.read_text(last_plans_ref))
+                    for k, v in raw.items():
+                        plans_by_no.setdefault(int(k), plan_from_dict(v))
+                except Exception as exc:  # noqa: BLE001
+                    detail_error += f"（读 debug 产物失败：{exc}）"
+
             pairs = []
             for no in range(1, n):
-                try:
-                    a = load_plan(store, bid, no)
-                    b = load_plan(store, bid, no + 1)
-                except Exception:
-                    break
+                a, b = plans_by_no.get(no), plans_by_no.get(no + 1)
+                if a is None or b is None:
+                    continue
                 pairs.append({
                     "a": no, "b": no + 1,
                     "exit_location": a.exit_state.location_name,
                     "entry_location": b.entry_state.location_name,
                     "b_is_transition": b.is_transition,
+                    "b_beat_type": str(getattr(b.beat_type, "value", b.beat_type)),
                     "shared_tokens": _shared_tokens(
                         a.exit_state.location_name, b.entry_state.location_name),
                 })
@@ -444,6 +467,8 @@ async def run_one(
                 "detail_refs": refs,
                 "expected": n,
                 "batch_size": batch_size,
+                # ★ 失败批次的当轮产物位置（诊断据此看到报警章的真实内容）
+                "last_plans_ref": last_plans_ref,
                 "adjacent_pairs": pairs,
                 "transition_rate": (
                     sum(1 for p in pairs if p["b_is_transition"]) / len(pairs)
