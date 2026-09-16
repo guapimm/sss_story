@@ -25,17 +25,28 @@ for r in d["results"]:
 
 print()
 print("=" * 96)
-print("失败聚合（D-16 判据）")
+print("失败聚合（D-16 判据：数**书数**，不是出现次数）")
 print("=" * 96)
 fails = d.get("failures") or {}
+#: ★ 优先用去重视图（`failures_books`）。旧报表没有该字段时回退到手工去重，
+#: 并**明确提示**——否则又会把"一本书的 3 条失败"读成"3 本书"。
+books_view = d.get("failures_books")
+if books_view is None:
+    print("  ⚠️ 该报表是**旧版** e2e 生成的（无 `failures_books` 字段）——")
+    print("     已按去重口径重算，但建议用新版重跑以获得完整字段。")
+    books_view = {k: sorted(set(v)) for k, v in fails.items()}
+
 if not fails:
     print("  全部通过 —— 无失败分类")
 else:
-    for label, books in sorted(fails.items(), key=lambda kv: -len(kv[1])):
-        n = len(set(books))
+    for label, books in sorted(books_view.items(),
+                               key=lambda kv: -len(kv[1])):
+        n = len(books)
         verdict = ("★ 通用缺陷（必修）" if n >= 3
                    else "待观察" if n == 2 else "单书特例（只记录）")
-        print(f"  {label:<52} {n} 本 {sorted(set(books))}  {verdict}")
+        hits = len(fails.get(label, []))
+        extra = f"  共{hits}处" if hits != n else ""
+        print(f"  {label[:50]:<52} {n} 本 {books}{extra}  {verdict}")
 
 n_ok = sum(1 for r in d["results"] if r["detail_ok"])
 print()
