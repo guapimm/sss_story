@@ -464,22 +464,46 @@ def test_rule15_timestamps_are_utc_iso_strings(src_root: Path) -> None:
 
 
 def test_rule16_llm_nodes_have_idempotency_key(src_root: Path) -> None:
-    """规则 16：LLM 节点必须有幂等键。
+    """规则 16：**调用 LLM 的**节点必须有幂等键。
 
     防的是 `langgraph#7417`（53 条评论仍 open）：**>180s 的调用会被静默重放**
     → 2~3× 冗余成本。而旧项目实测 `editor` 平均 **117s**、`architect` **72s**，
     章节生成极易超阈值。
+
+    ## ★ 判定口径：按"是否真的调用 LLM"，不是按"是否住在 nodes/ 目录"
+
+    原实现只看 `nodes/` 下有没有 `def` —— 于是**纯领域规则模块**
+    （如 `continuity.py`：输入输出都是领域对象、零 LLM 调用）
+    也会被要求使用幂等键，而它根本没有可幂等的调用。
+
+    把它加个无意义的 `idempotency_key` 参数只是**取悦测试**；
+    正确的做法是**让规则检查它真正关心的东西**：
+    这个模块里有没有发起 LLM 调用。
     """
     nodes_dir = src_root / "graph" / "nodes"
     if not nodes_dir.exists() or not list(_iter_py(nodes_dir)):
         pytest.skip("尚无节点实现")
+
+    #: 出现这些名字即认为该模块会发起 LLM 调用
+    llm_markers = ("complete_structured", "client.complete", "_client.complete",
+                   "LLMClient", "CallContext")
+
     offenders: list[str] = []
+    checked = 0
     for path in _iter_py(nodes_dir):
         text = path.read_text(encoding="utf-8")
         if "def " not in text:
             continue
+        if not any(m in text for m in llm_markers):
+            continue  # 纯领域模块，无可幂等的调用
+        checked += 1
         if "idempotency_key" not in text and "idem" not in text:
             offenders.append(str(path.relative_to(src_root)))
+
+    assert checked > 0, (
+        "没有任何模块被识别为 LLM 节点 —— 标记词可能已过期，"
+        "本规则会静默失效（比报错更糟）"
+    )
     assert not offenders, (
         "LLM 节点必须使用幂等键（防静默重放）：\n  " + "\n  ".join(offenders)
     )

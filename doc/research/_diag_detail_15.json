@@ -1,33 +1,90 @@
 {
  "book_id": 15,
- "lint_issues": [],
- "detail_error": "",
- "detail_plans": 20,
- "detail_refs": [
-  "books/15/plans/00001.json",
-  "books/15/plans/00002.json",
-  "books/15/plans/00003.json",
-  "books/15/plans/00004.json",
-  "books/15/plans/00005.json",
-  "books/15/plans/00006.json",
-  "books/15/plans/00007.json",
-  "books/15/plans/00008.json",
-  "books/15/plans/00009.json",
-  "books/15/plans/00010.json",
-  "books/15/plans/00011.json",
-  "books/15/plans/00012.json",
-  "books/15/plans/00013.json",
-  "books/15/plans/00014.json",
-  "books/15/plans/00015.json",
-  "books/15/plans/00016.json",
-  "books/15/plans/00017.json",
-  "books/15/plans/00018.json",
-  "books/15/plans/00019.json",
-  "books/15/plans/00020.json"
+ "lint_issues": [
+  "第2章：地点跳变：本章结束于「铁门关驿丞署·院内」，下一章开始于「铁门关驿丞署·前堂」（须写出可叙述的过渡与动机，否则就是硬切）"
  ],
+ "detail_error": "细纲在 3 次尝试后仍未通过 lint（1 章有问题）",
+ "detail_plans": 0,
+ "detail_refs": [],
  "expected": 20,
  "batch_size": 5,
- "last_plans_ref": "",
- "adjacent_pairs": [],
- "transition_rate": null
+ "last_plans_ref": "books/15/debug/plans_failed_00001-00005.json",
+ "adjacent_pairs": [
+  {
+   "a": 1,
+   "b": 2,
+   "exit_location": "铁门关驿丞署·院内",
+   "entry_location": "铁门关驿丞署·前堂",
+   "b_is_transition": false,
+   "b_beat_type": "turning",
+   "shared_tokens": [
+    "·",
+    "丞",
+    "关",
+    "署",
+    "铁",
+    "门",
+    "驿"
+   ]
+  },
+  {
+   "a": 2,
+   "b": 3,
+   "exit_location": "铁门关驿丞署·直房",
+   "entry_location": "铁门关驿丞署·直房",
+   "b_is_transition": false,
+   "b_beat_type": "normal",
+   "shared_tokens": [
+    "·",
+    "丞",
+    "关",
+    "房",
+    "直",
+    "署",
+    "铁",
+    "门",
+    "驿"
+   ]
+  },
+  {
+   "a": 3,
+   "b": 4,
+   "exit_location": "铁门关驿丞署·后巷",
+   "entry_location": "铁门关驿丞署·后巷",
+   "b_is_transition": false,
+   "b_beat_type": "transition",
+   "shared_tokens": [
+    "·",
+    "丞",
+    "关",
+    "后",
+    "巷",
+    "署",
+    "铁",
+    "门",
+    "驿"
+   ]
+  },
+  {
+   "a": 4,
+   "b": 5,
+   "exit_location": "铁门关驿丞署·书吏房",
+   "entry_location": "铁门关驿丞署·书吏房",
+   "b_is_transition": false,
+   "b_beat_type": "climax",
+   "shared_tokens": [
+    "·",
+    "丞",
+    "书",
+    "关",
+    "吏",
+    "房",
+    "署",
+    "铁",
+    "门",
+    "驿"
+   ]
+  }
+ ],
+ "transition_rate": 0.0
 }

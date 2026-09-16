@@ -58,6 +58,7 @@ from storyforge.domain.schedulers.health_scheduler import (
     HealthSchedule,
     HealthScheduler,
 )
+from storyforge.graph.nodes.continuity import continuity_issues
 from storyforge.infra.llm.client import CallContext, LLMClient
 from storyforge.infra.llm.schemas import ChapterPlanOut, DetailBatchOut, SkeletonOut
 from storyforge.infra.storage.artifacts import ArtifactStore
@@ -358,70 +359,10 @@ def validate_batch(
     for a, b in zip(ordered, ordered[1:]):
         if b != a + 1:
             continue
-        problems = _continuity_issues(plans[a], plans[b])
+        problems = continuity_issues(plans[a], plans[b])
         if problems:
             issues.setdefault(b, []).extend(problems)
     return issues
-
-
-def _continuity_issues(prev: ChapterPlan, nxt: ChapterPlan) -> list[str]:
-    """相邻两章的连续性检查 —— **按"有无过渡"判，而不是按地点名是否相等**。
-
-    ## 为什么必须改（缺陷 2，实测 3 次踩到）
-
-    原实现只在 `nxt.is_transition` 为真时豁免，其余一律拿**地点名字符串**
-    逐字比较。而 prompt 教的是「换**地图**才算换场」——
-    于是模型把"同一栋楼里换房间"当作**非换场**（它没换地图！），
-    校验器却按地点名判跳变 → 模型**永远无法通过**：
-    不置旗 → 报警 → 重试里按同样理解仍不置旗 → 3 轮耗尽 → **整批细纲失败**。
-
-    **实测证据**（`scripts/diag_continuity_real.py`）：
-    LLM 调用**成功**（`status=ok`、`completion=5289`）、细纲**真的生成了**，
-    却被两条假阳性整批丢弃（`ok=False plans=0`）：
-
-        第2章 档案管理科，档案库房外走廊 → 王队长办公室   （同一栋办公楼）
-        第3章 林远家 → 林远办公室                        （上班，最平常的转场）
-
-    ## 修法 C：**统一"换场"的定义**（不是放宽判据）
-
-    这不是放宽阈值，而是**消除 prompt 与校验器的定义冲突** ——
-    `outline.py` 的设计说明第 42 行写着：
-
-    > `is_transition` 显式建模换场章 —— 解除旧项目"换图一律判缺陷"的禁令，
-    > 改为"**无过渡的换图才是缺陷**"。
-
-    而原 prompt 把 `is_transition` 描述成「换**地图**/换时间」，
-    校验器却按**地点名**判 —— 模型认为"同一栋楼换房间"不算换场（没换地图！），
-    于是不置旗、必然报警、重试仍不置旗、3 轮耗尽 → **整批细纲失败**。
-    **模型永远无法通过，因为它遵循的是另一套定义。**
-
-    修法：把定义统一到**场景层面**（prompt + schema 都已改为
-    "场景地点发生推移就要置 true，同楼换房间也算"）。
-    这样模型有明确、可执行的规则，校验器保持严格 —— **两边终于说的是同一件事**。
-
-    ## 保留的判定顺序
-
-      1. **地点其实没变**（含空值）→ 不算跳变
-      2. **本章声明了换场** —— `is_transition` 或 `beat_type == TRANSITION`
-         （两个独立信号，任一成立即可）
-
-    ⚠️ **刻意不做**"`why_now` 非空即放过"：`why_now` 是**必填字段**，
-    检查它等于让本校验器永远通过（静默失效比误报更糟）。
-    "过渡有没有写"属于**语义判断**，留给审校层（`style_critic` / 审校节点），
-    不在这里用文本启发式硬猜。
-    """
-    # ① 地点没变 → 无跳变（空地点也放过：缺失不是"跳变"，由别的 lint 管）
-    a_loc = (prev.exit_state.location_name or "").strip()
-    b_loc = (nxt.entry_state.location_name or "").strip()
-    if not a_loc or not b_loc or a_loc == b_loc:
-        return []
-
-    # ② 本章声明了换场（两个独立信号：布尔旗 + 节拍类型）
-    if nxt.is_transition or nxt.beat_type == BeatType.TRANSITION:
-        return []
-
-    # 两条都不成立 → 交给原有检查给具体描述
-    return prev.exit_state.continuity_problems(nxt.entry_state)
 
 
 # --------------------------------------------------------------------------- #

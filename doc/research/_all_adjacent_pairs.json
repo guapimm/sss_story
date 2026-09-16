@@ -1,0 +1,170 @@
+[
+ {
+  "book": 12,
+  "a": 1,
+  "b": 2,
+  "exit": "秦牧的柴房",
+  "entry": "秦牧的柴房",
+  "is_transition": false
+ },
+ {
+  "book": 12,
+  "a": 2,
+  "b": 3,
+  "exit": "秦牧的柴房",
+  "entry": "杂役坊柴房区",
+  "is_transition": false
+ },
+ {
+  "book": 12,
+  "a": 3,
+  "b": 4,
+  "exit": "秦牧的柴房",
+  "entry": "青阳宗外门废料处理池",
+  "is_transition": false
+ },
+ {
+  "book": 12,
+  "a": 4,
+  "b": 5,
+  "exit": "秦牧的柴房",
+  "entry": "秦牧的柴房",
+  "is_transition": false
+ },
+ {
+  "book": 13,
+  "a": 1,
+  "b": 2,
+  "exit": "上海某三甲医院急诊室外街道",
+  "entry": "上海某三甲医院急诊外科诊室",
+  "is_transition": true
+ },
+ {
+  "book": 13,
+  "a": 2,
+  "b": 3,
+  "exit": "林薇律所办公室",
+  "entry": "林薇律所地下停车场",
+  "is_transition": true
+ },
+ {
+  "book": 13,
+  "a": 3,
+  "b": 4,
+  "exit": "林薇律所办公室",
+  "entry": "林薇律所办公室",
+  "is_transition": false
+ },
+ {
+  "book": 13,
+  "a": 4,
+  "b": 5,
+  "exit": "咖啡馆",
+  "entry": "咖啡馆",
+  "is_transition": true
+ },
+ {
+  "book": 13,
+  "a": 5,
+  "b": 6,
+  "exit": "上海某三甲医院住院部外",
+  "entry": "仁华医院法务部办公室门口",
+  "is_transition": false
+ },
+ {
+  "book": 13,
+  "a": 6,
+  "b": 7,
+  "exit": "仁华医院大门外",
+  "entry": "仁华医院大门外",
+  "is_transition": false
+ },
+ {
+  "book": 13,
+  "a": 7,
+  "b": 8,
+  "exit": "林薇诊所外的街道",
+  "entry": "林薇诊所外的街道",
+  "is_transition": true
+ },
+ {
+  "book": 13,
+  "a": 8,
+  "b": 9,
+  "exit": "仁华医院为王女士安排的临时安全病房",
+  "entry": "仁华医院为王女士安排的临时安全病房外",
+  "is_transition": false
+ },
+ {
+  "book": 13,
+  "a": 9,
+  "b": 10,
+  "exit": "仁华医院员工咖啡厅外",
+  "entry": "仁华医院员工咖啡厅外",
+  "is_transition": false
+ },
+ {
+  "book": 15,
+  "a": 1,
+  "b": 2,
+  "exit": "铁门关驿丞署·院内",
+  "entry": "铁门关驿丞署·前堂",
+  "is_transition": false
+ },
+ {
+  "book": 15,
+  "a": 2,
+  "b": 3,
+  "exit": "铁门关驿丞署·直房",
+  "entry": "铁门关驿丞署·直房",
+  "is_transition": false
+ },
+ {
+  "book": 15,
+  "a": 3,
+  "b": 4,
+  "exit": "铁门关驿丞署·后巷",
+  "entry": "铁门关驿丞署·后巷",
+  "is_transition": false
+ },
+ {
+  "book": 15,
+  "a": 4,
+  "b": 5,
+  "exit": "铁门关驿丞署·书吏房",
+  "entry": "铁门关驿丞署·书吏房",
+  "is_transition": false
+ },
+ {
+  "book": 16,
+  "a": 1,
+  "b": 2,
+  "exit": "澜川市公安局刑侦支队办公室",
+  "entry": "澜川市公安局刑侦支队楼下",
+  "is_transition": true
+ },
+ {
+  "book": 16,
+  "a": 2,
+  "b": 3,
+  "exit": "旧镇‘文清里’7号楼101室门外",
+  "entry": "旧镇‘文清里’7号楼101室门外",
+  "is_transition": false
+ },
+ {
+  "book": 16,
+  "a": 3,
+  "b": 4,
+  "exit": "从旧镇返回市局的途中",
+  "entry": "市局专案组临时办公室",
+  "is_transition": true
+ },
+ {
+  "book": 16,
+  "a": 4,
+  "b": 5,
+  "exit": "市公安局地下特殊物证库入口走廊",
+  "entry": "市局地下特殊物证库入口走廊",
+  "is_transition": false
+ }
+]
