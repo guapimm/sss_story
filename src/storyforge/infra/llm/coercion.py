@@ -147,17 +147,31 @@ def coerce_records(v: Any, *field_names: str) -> Any:
     实测：里程碑被模型写成 `[8, 16, 24]`（卷内章号），而 schema 要
     `[{"chapter_no": 8}, ...]`。信息完全等价 —— 裸值就是第一个字段。
 
-    ⚠️ 只在**全部元素都是标量**时才转换；一旦出现 dict 就原样交给
+    ★ 字符串也支持（`ReviewResultOut.issues` 实测需要）：
+    模型把问题写成**一句话描述**而不是 `{severity, category, description}`
+    对象是很自然的读法 —— 它**把最重要的信息（问题是什么）给了**，
+    只是没按字段拆开。直接拒绝会让**整章正文重写失败**（实测踩到：
+    `style_critic` 三次全败 → 抛异常中断整个 `write`）。
+
+    ⚠️ 只在**全部元素都是标量或字符串**时才转换；一旦出现 dict 就原样交给
     Pydantic（那说明模型用了别的形状，应当正常报错而不是猜）。
     """
     if not isinstance(v, list) or not v or not field_names:
         return v
-    if not all(
-        isinstance(x, (int, float)) and not isinstance(x, bool) for x in v
-    ):
+    if not all(isinstance(x, (int, float, str)) and not isinstance(x, bool)
+               for x in v):
         return v
     primary = field_names[0]
-    return [{primary: int(x)} for x in v]
+    out: list[dict[str, Any]] = []
+    for x in v:
+        if isinstance(x, str):
+            s = x.strip()
+            if not s:
+                continue
+            out.append({primary: s})
+        else:
+            out.append({primary: int(x)})
+    return out
 
 
 __all__ = [

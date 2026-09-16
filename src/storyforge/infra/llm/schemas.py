@@ -643,10 +643,23 @@ from storyforge.infra.llm.extraction_schemas import (  # noqa: E402
 
 
 class ReviewIssueOut(BaseModel):
-    severity: str = Field(description="critical | major | minor")
+    #: ⚠️ `severity` / `category` 有**默认值**（原为必填）。
+    #
+    # 实测：模型常把问题写成**一句话描述**（信息完整，只是没拆字段），
+    # 归一到 `description` 后这两个字段就空缺。若仍视为必填，
+    # 归一等于白做 —— 一样会拒 → 三次重试全败 → **中断整个 write**。
+    #
+    # 语义上也说得通：**严重度与类别是模型的"判断"，不是"事实"**，
+    # 它没给时，`minor` + `other` 是最保守的组合
+    # （按严重度决策的下游不会因为默认值而误判成"严重问题"）。
+    severity: str = Field(
+        default="minor",
+        description="critical | major | minor（不确定时用 minor）",
+    )
     category: str = Field(
+        default="other",
         description="问题类别：ai_style | consistency | pacing | logic | "
-        "foreshadow | ooc | outline_deviation | other"
+        "foreshadow | ooc | outline_deviation | other",
     )
     location: str = Field(default="", description="问题位置（章内定位，如「末段」）")
     description: str = Field(description="问题说明（具体、可执行）")
@@ -679,6 +692,33 @@ class ReviewResultOut(BaseModel):
     )
     score: float = Field(ge=0, le=10, description="质量评分（0~10）")
     notes: str = Field(default="", description="补充说明（散文，**不作为判据**）")
+
+    @field_validator("issues", mode="before")
+    @classmethod
+    def _coerce_issue_strings(cls, v: Any) -> Any:
+        """★ 接受「问题写成一句话」的形状，归一到对象。
+
+        ## 实测踩到（`storyforge write` 直接崩）
+
+        模型返回：
+
+            "issues": [
+              "AI味过重：比喻和套话密集，如'风像无数细小的刀片'…",
+              "节奏问题：内心活动描写冗长…"
+            ]
+
+        **信息全都在**（而且写得挺具体），只是没按
+        `{severity, category, description}` 拆字段。`list[ReviewIssueOut]`
+        直接拒它 → 三次重试全败 → `StructuredOutputError` **中断整个 write**。
+
+        这与 `terms` / `rules` / `milestones` 的形状漂移是**同一类**：
+        **对输入宽容，对输出严格** —— 信息不丢就归一，不拒绝。
+
+        归一后 `severity` / `category` 用默认值（`minor` / `other`）：
+        模型没说严重度，代码**不替它猜**（猜错比留空更糟；
+        下游要按严重度决策时，`minor` 是最保守的选择）。
+        """
+        return coerce_records(v, "description")
 
     @model_validator(mode="after")
     def _revised_required_when_issues(self) -> ReviewResultOut:

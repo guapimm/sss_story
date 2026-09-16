@@ -207,6 +207,176 @@ def test_review_score_range_enforced() -> None:
         ReviewResultOut(issues=[], score=-1.0)
 
 
+def test_review_accepts_issues_as_plain_strings() -> None:
+    """★ 实测：模型把问题写成**一句话**而不是对象 —— 必须归一，不能拒绝。
+
+    ## 实测踩到（`storyforge write` 直接崩）
+
+        "issues": [
+          "AI味过重：比喻和套话密集，如'风像无数细小的刀片'…",
+          "节奏问题：内心活动描写冗长…"
+        ]
+
+    **信息全都在**（写得还挺具体），只是没按 `{severity, category, description}`
+    拆字段。`list[ReviewIssueOut]` 直接拒它 → 三次重试全败 →
+    `StructuredOutputError` **中断整个 write**（正文一个字都没写出来）。
+
+    与 `terms` / `rules` / `milestones` 的形状漂移是**同一类**：
+    **对输入宽容，对输出严格** —— 信息不丢就归一，不拒绝。
+    """
+    r = ReviewResultOut(
+        issues=[
+            "AI味过重：比喻和套话密集，如'风像无数细小的刀片'、'如同一个沉默的鬼影'",
+            "节奏问题：内心活动描写冗长，反复描述恐惧和思考，信息前进缓慢",
+        ],
+        revised_content="值房外的风呜咽着，刮过窗棂。" * 60,
+        score=6.0,
+    )
+    assert len(r.issues) == 2
+    # 归一到 `description`（模型给的那句话就是问题描述）
+    assert "AI味过重" in r.issues[0].description
+    assert "节奏问题" in r.issues[1].description
+    # 严重度/类别用**保守默认值**，代码不替模型猜
+    assert r.issues[0].severity == "minor"
+    assert r.issues[0].category == "other"
+
+
+def test_review_still_accepts_proper_objects() -> None:
+    """正向对照：规范的**对象**形状不受影响（归一不是"什么都收"）。"""
+    r = ReviewResultOut(
+        issues=[{"severity": "critical", "category": "logic",
+                 "description": "时间线矛盾", "suggestion": "调整顺序"}],
+        revised_content="修正后的正文" * 100,
+        score=4.0,
+    )
+    assert r.issues[0].severity == "critical"
+    assert r.issues[0].category == "logic"
+    assert r.issues[0].suggestion == "调整顺序"
+
+
+def test_review_rejects_truly_malformed_issues() -> None:
+    """真正畸形的形状仍要报错（不要在"宽容"上走过头）。"""
+    with pytest.raises(ValidationError):
+        ReviewResultOut(issues=[{"no_description_field": "x"}], score=5.0)
+
+
+# --------------------------------------------------------------------------- #
+# ★ 抽取类 schema 的形状归一（`storyforge write` 实测崩在这里）
+# --------------------------------------------------------------------------- #
+
+
+def test_state_update_accepts_person_attribute_to_shape() -> None:
+    """★ 实测：模型用 `{person, attribute, from, to}` 表达状态变化。
+
+    这是**非常自然**的写法 —— "从什么变成什么"本来就是状态变化的核心，
+    而且信息给全了。但 schema 要 `{entity, field, value}` →
+    三次重试全败 → `StructuredOutputError` **中断整个 write**。
+    """
+    from storyforge.infra.llm.schemas import StateUpdateOut  # noqa: PLC0415
+
+    s = StateUpdateOut.model_validate({
+        "person": "李明", "attribute": "情绪",
+        "from": "疲惫", "to": "恐惧但表面镇定",
+    })
+    assert s.entity == "李明"
+    assert s.field == "情绪"
+    # ★ 保留**变化方向**：只留 to 会丢掉"原来是什么"
+    assert "疲惫" in s.value and "恐惧但表面镇定" in s.value
+
+
+def test_state_update_accepts_entity_attribute_value_shape() -> None:
+    """实测第二种：`{entity, attribute, value}`（只用 attribute 漂移）。"""
+    from storyforge.infra.llm.schemas import StateUpdateOut  # noqa: PLC0415
+
+    s = StateUpdateOut.model_validate({
+        "entity": "李明", "attribute": "目标",
+        "value": "从完成文书归档变为隐瞒发现",
+    })
+    assert s.entity == "李明"
+    assert s.field == "目标"
+    assert s.value == "从完成文书归档变为隐瞒发现"
+
+
+def test_state_update_still_accepts_canonical_shape() -> None:
+    """正向对照：规范形状不受影响。"""
+    from storyforge.infra.llm.schemas import StateUpdateOut  # noqa: PLC0415
+
+    s = StateUpdateOut.model_validate({
+        "entity": "陈砚", "field": "位置", "value": "长明楼三层",
+    })
+    assert (s.entity, s.field, s.value) == ("陈砚", "位置", "长明楼三层")
+
+
+def test_event_accepts_time_place_and_chinese_keys() -> None:
+    """★ 实测：`events` 用了 `time` / `place` / 中文 `后果`。
+
+    ⚠️ 这几个字段**有默认值** —— 不归一**不会报错**，
+    只会让时间/后果**静默落空**。静默丢数据比报错更糟：
+    报表看不出来，下游拿到的是空值。
+    """
+    from storyforge.infra.llm.schemas import EventOut  # noqa: PLC0415
+
+    e = EventOut.model_validate({
+        "time": "议和前夜，夜间",
+        "place": "雁门关府衙值房",
+        "participants": ["李明"],
+        "description": "李明发现封泥有二次黏合痕迹",
+        "后果": "开始怀疑军报被篡改",
+    })
+    assert e.story_time == "议和前夜，夜间"
+    assert e.location == "雁门关府衙值房"
+    assert e.consequence == "开始怀疑军报被篡改"
+    assert e.description
+
+
+@pytest.mark.parametrize("name,payload,expect_entities", [
+    ("规范形状",
+     {"state_updates": [{"entity": "李明", "field": "位置", "value": "值房"}]},
+     ["李明"]),
+    ("entity+attribute+value",
+     {"state_updates": [{"entity": "李明", "attribute": "情绪",
+                         "value": "从疲惫变为惊恐"}]},
+     ["李明"]),
+    ("person+attribute+from+to",
+     {"state_updates": [{"person": "李明", "attribute": "情绪",
+                         "from": "疲惫", "to": "惊恐"}]},
+     ["李明"]),
+    ("dict，值是字符串",
+     {"state_updates": {"李明": "情绪从疲惫变为恐惧和镇定"}},
+     ["李明"]),
+    ("★ dict 套 dict",
+     {"state_updates": {"李明": {"情绪状态": "从疲惫转为极度惊恐"}}},
+     ["李明"]),
+    ("dict，值是列表",
+     {"state_updates": {"李明": ["情绪：惊恐", "目标：隐瞒发现"]}},
+     ["李明", "李明"]),
+])
+def test_scene_extraction_normalizes_all_observed_shapes(
+    name: str, payload: dict, expect_entities: list[str]
+) -> None:
+    """★★ `scene_extractor` 实测的**全部形状**都必须能归一。
+
+    ## 为什么必须穷举（真实数据）
+
+    **同一本书、同一提示词**，四轮给出四种不同形状。单模型下这种
+    "形状偏好不唯一"是**稳定的** —— 靠重试改不动（每次重试都可能撞上
+    另一种），只能**全部接受并归一**。
+
+    否则后果是：三次重试全败 → `StructuredOutputError` →
+    **中断整个 `storyforge write`**（实测已发生两次）。
+    """
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    out = SceneExtractionOut.model_validate({
+        "summary": "李明发现军报封泥异常", **payload,
+    })
+    assert [s.entity for s in out.state_updates] == expect_entities
+    # 每条都必须有可用的值（不能归一成空壳）
+    assert all(s.value.strip() for s in out.state_updates), (
+        f"{name}：归一后 value 为空 —— 信息丢了，等于没归一"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 细纲结构
 # --------------------------------------------------------------------------- #
