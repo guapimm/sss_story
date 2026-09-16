@@ -117,24 +117,43 @@ class WorldStateSnapshot:
         旧项目 `outline_lint.py:121-125` 只能做 `exit_state != entry_state`
         的**字符串比对**，无法给出"哪里不一致"。
 
-        地点比对**优先用 ID**；细纲阶段（尚无 ID）回退到名字比对 ——
-        名字比对能抓出「本章结束在长明楼 / 下一章开始在镇公所」这类跳变。
+        地点比对**优先用 ID**：两侧都有 ID 时 ID 是**终局判据**
+        （相同即通过，不再拿名字否定它）；细纲阶段（尚无 ID）才回退名字。
+
+        ⚠️ **名称回退路径有已知假阳性**（同一场所内换房间也报警，实测 100%）。
+        未修的原因与所需数据见 `doc/交接文档.md` §4 缺陷 2；
+        量化脚本 `scripts/diag_continuity.py`。
         """
         problems: list[str] = []
+        # ★ 两侧都有 ID 时，**ID 就是终局判据** —— 不再回退比名字。
+        #
+        # 原先写成 `if ID不同: 报ID / elif 名字不同: 报名字`，于是
+        # **ID 相同**时 `if` 为假、`elif` 成立 → 又拿名字比了一次：
+        #
+        #     本章 实体7「长明楼档案室」→ 下一章 实体7「长明楼值班室」
+        #     → 误报「地点跳变」（ID 明明相同！）
+        #
+        # 这与类文档第 120 行「两者同时存在时以 ID 为准」**自相矛盾**。
+        # 抽取落地后名字常有多种写法（档案室/档案库/档案间），
+        # 拿名字去否掉 ID 的一致性判断，等于让最可靠的那个信号失效。
         if (
             self.location_entity_id is not None
             and nxt.location_entity_id is not None
-            and self.location_entity_id != nxt.location_entity_id
         ):
-            problems.append(
-                f"地点跳变：本章结束于实体 {self.location_entity_id}，"
-                f"下一章开始于实体 {nxt.location_entity_id}"
-            )
+            if self.location_entity_id != nxt.location_entity_id:
+                problems.append(
+                    f"地点跳变：本章结束于实体 {self.location_entity_id}，"
+                    f"下一章开始于实体 {nxt.location_entity_id}"
+                )
         elif (
             self.location_name
             and nxt.location_name
             and self.location_name.strip() != nxt.location_name.strip()
         ):
+            # ⚠️ 名称回退路径（细纲阶段，尚无 ID）—— **已知假阳性**：
+            # 只做字符串相等比较，同一场所内换房间也会报警（实测 100%）。
+            # 未在此处修：真数据为 0 条，无法判定改法（D-16）。
+            # 量化与三种改法见 `doc/交接文档.md` §4 缺陷 2。
             problems.append(
                 f"地点跳变：本章结束于「{self.location_name}」，"
                 f"下一章开始于「{nxt.location_name}」"

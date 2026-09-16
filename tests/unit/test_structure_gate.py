@@ -561,3 +561,72 @@ def test_structured_state_passes_when_consistent() -> None:
 def test_world_state_snapshot_emptiness() -> None:
     assert WorldStateSnapshot().is_empty()
     assert not WorldStateSnapshot(location_entity_id=1).is_empty()
+
+
+# --------------------------------------------------------------------------- #
+# 缺陷 2：名称回退路径的假阳性 —— **现状锁定**（不是"期望行为"）
+# --------------------------------------------------------------------------- #
+#
+# ⚠️ 这一组测试锁的是**当前行为**，用于让"改与不改"成为一次**显式决定**，
+#    而不是某天被无意改掉。它们**不代表**这些行为是对的 ——
+#    详见 `doc/交接文档.md` §4 缺陷 2（含量化数据与三种改法）。
+#
+# 为什么不现在改：真数据 0 条（骨架阶段未通过，细纲从未产出），
+# 无法判定改法。D-16 要求先看数据。量化脚本：`scripts/diag_continuity.py`。
+
+
+@pytest.mark.parametrize("a,b", [
+    ("青岚宗杂役弟子通铺", "青岚宗外门杂役区"),
+    ("长明楼档案室", "长明楼值班室"),
+    ("明城警察局重案组办公区", "明城警察局档案库"),
+])
+def test_name_fallback_flags_same_place_moves_as_jumps(a: str, b: str) -> None:
+    """★ 现状：同一场所内的正常移动**也被判为跳变**（假阳性率 100%）。
+
+    根因是 `continuity_problems` 的名称回退路径只做**字符串相等**比较
+    （`outline.py:133-142`），对"同前缀不同后缀"没有豁免。
+
+    ⚠️ 这是**已知缺陷**，不是设计意图。书 12 的 `第2章：地点跳变` 即此。
+    修法与所需数据见 `doc/交接文档.md` §4 缺陷 2.2。
+    """
+    problems = WorldStateSnapshot(location_name=a).continuity_problems(
+        WorldStateSnapshot(location_name=b)
+    )
+    assert problems, "现状：名称不同即报警"
+    assert "地点跳变" in problems[0]
+
+
+def test_id_path_is_not_affected_by_names() -> None:
+    """★ 用 ID 时**不受名称影响** —— 这正是"地点层级"该走的路。
+
+    ID 相同即视为同一地点，名字怎么改都不报警（层级落地后应扩展到这里）。
+    """
+    a = WorldStateSnapshot(location_entity_id=7, location_name="长明楼档案室")
+    b = WorldStateSnapshot(location_entity_id=7, location_name="长明楼值班室")
+    assert a.continuity_problems(b) == []
+
+
+def test_prompt_and_validator_disagree_on_transition_definition() -> None:
+    """★★ 定义冲突：prompt 说 `is_transition` 是「换**地图**」，
+    校验器却按**地点名**判跳变。
+
+    这是缺陷 2 的**真正要害**（比假阳性更值得修）：
+    模型认为"同楼换房间"不是换场 → 不置 `is_transition` → 校验器报警
+    → 重试里它按 prompt 理解仍不置旗 → 3 轮耗尽 → **整批细纲失败**。
+    模型**永远无法通过**，因为 prompt 与校验器对同一概念的定义不一致。
+
+    与 §7.2「形状漂移」同类：**不是靠模型努力能弥合的**。
+
+    本测试锁定"当前确实是这个定义"，防止有人在没读文档的情况下
+    单方面改掉 prompt 或校验器其中一边（那样只会让冲突换个方向）。
+    """
+    from storyforge.graph.nodes.detail_planner import DETAIL_PLANNER_SYSTEM  # noqa: PLC0415
+
+    # prompt 侧：明确说的是"换地图"
+    assert "换地图" in DETAIL_PLANNER_SYSTEM
+    # 校验器侧：按地点**名**判（与"地图"不是同一个粒度）
+    probs = WorldStateSnapshot(location_name="长明楼档案室").continuity_problems(
+        WorldStateSnapshot(location_name="长明楼值班室")
+    )
+    assert probs, "校验器按地点名判 → 与 prompt 的'换地图'粒度不一致"
+
