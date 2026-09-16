@@ -132,6 +132,10 @@ def _classify(text: str) -> str:
     rules: tuple[tuple[str, str], ...] = (
         # ── 窄匹配（长短语，指哪打哪）──
         ("未落实本卷台阶指定的新势力", "skeleton:new_factions"),
+        # ★ 现行措辞（`places` 字段引入后）
+        ("骨架未落实本卷新地图", "skeleton:new_locations"),
+        # ⚠️ 历史措辞：旧诊断 json 里存着它 —— 保留映射，历史报表仍可复现
+        ("未提及本卷新地图", "skeleton:new_locations"),
         ("未提及本卷新地图", "skeleton:new_locations"),
         # ⚠️ 历史规则：`BibleOut` 已改为**自动归位**（不再产生这条消息），
         #    但旧的 `_diag_*.json` 里存着它 —— 保留映射，历史报表仍可复现。

@@ -1,0 +1,27 @@
+{
+ "results": [
+  {
+   "book_id": 16,
+   "genre": "mystery",
+   "topic": "现代悬疑：一桩十二年前的旧案重开，唯一的目击者如今是负责此案的警官",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 3,
+   "repair_rounds": 0,
+   "skeleton_ok": true,
+   "detail_ok": false,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 1147.0992298999918,
+   "failures": [
+    "detail:error:细纲生成调用失败：节点 detail_planner 调用失败（3 次尝试）："
+   ]
+  }
+ ],
+ "failures": {
+  "detail:error:细纲生成调用失败：节点 detail_planner 调用失败（3 次尝试）：": [
+   16
+  ]
+ }
+}

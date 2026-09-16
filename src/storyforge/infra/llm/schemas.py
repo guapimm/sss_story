@@ -48,10 +48,9 @@ from storyforge.infra.llm.coercion import (
     coerce_str_list,
 )
 
-
-def _enum_values(enum_cls) -> str:
-    """把枚举渲染成 prompt 可用的取值列表（**单一来源的落地方式**）。"""
-    return " | ".join(e.value for e in enum_cls)
+#: 枚举 → prompt 文本。定义在 `enum_text.py`（与 `extraction_schemas.py` 共用），
+#: 这里保留本地别名 `_enum_values` 以免改动本文件内的大量调用点。
+from storyforge.infra.llm.enum_text import enum_values as _enum_values
 
 
 # --------------------------------------------------------------------------- #
@@ -479,7 +478,7 @@ class ArcOut(BaseModel):
 
 
 class SkeletonOut(BaseModel):
-    """本卷骨架 —— 弧线 / 段落 / 角色 / 势力。"""
+    """本卷骨架 —— 弧线 / 段落 / 角色 / 势力 / 地点。"""
 
     arcs: list[ArcOut] = Field(description="故事线（≥6 条，其中核心线 ≥2、关系线 ≥2、对立线 ≥2）")
     segments: list[str] = Field(
@@ -488,6 +487,34 @@ class SkeletonOut(BaseModel):
     )
     characters: list[str] = Field(description="本卷主要角色名（≥3）")
     factions: list[str] = Field(description="本卷登场势力名（≥4）")
+    #: ★ 本卷用到的地点（必须覆盖卷级台阶的 `new_locations`）。
+    #:
+    #: ## 为什么必须有这个字段（实测：3 本书卡在同一处）
+    #:
+    #: 台阶要求「新地图必须落实到骨架」，但**原先 schema 里没有地点字段** ——
+    #: 校验器只能在 `arcs` + `segments` 的**自由文本里子串搜索**地名。
+    #:
+    #: 后果是一条**结构性不对称**：
+    #:
+    #:     new_factions → 有 `factions` 字段 → 模型照抄进去 → 稳定通过
+    #:     new_locations→ 没有字段        → 只能指望地名恰好出现在剧情描述里 → 失败
+    #:
+    #: 实测（书 16）：模型把「警察局重案组」**正确填进了 `factions`**，
+    #: 但 `arcs`/`segments` 里没有它 —— **不是漏了，是没地方放**。
+    #: 这不是模型的错：「故事线」讲的是**剧情**，地名是**场景**属性，
+    #: 两者不在同一个抽象层次，不该指望前者恰好包含后者。
+    #:
+    #: ## 为什么不靠"再放宽匹配器"
+    #:
+    #: 匹配器已容错两次（LCS≥4 + 主名拆分）。书 16 复算 LCS=3，
+    #: 命中的是「警察局」「重案组」这类**通用词** —— 真放宽到 3，
+    #: 会把「某市公安局」与「另一个警察局」判成同一地点（假阴性）。
+    #: 问题不在匹配，在于**要求的东西在 schema 里没有落点**。
+    places: list[str] = Field(
+        default_factory=list,
+        description="本卷用到的主要地点名。**必须包含卷级台阶指定的新地图**，"
+        "并给出本卷的其他重要场所（3~8 个）。只写地点本身，不要写剧情",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -565,122 +592,26 @@ class DetailBatchOut(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# 抽取（拆分后：每节点只抽一类）
+# 抽取类 schema —— **再导出**（定义已移至 `extraction_schemas.py`）
 # --------------------------------------------------------------------------- #
-
-
-class EntityMentionOut(BaseModel):
-    """正文中提到的实体（供 `entity_resolver` 归一）。"""
-
-    name: str = Field(description="正文中出现的名字")
-    kind: str = Field(
-        description=f"实体类型：{_enum_values(EntityKind)}"
-        "（**势力**与**组织**都是合法值）"
-    )
-    aliases: list[str] = Field(default_factory=list, description="同章出现的别名")
-    intro_method: str = Field(
-        default="unknown",
-        description="引入方式：self_intro | mentioned_by_other | narrator_intro | "
-        "appeared_before | baseless_recall | baseless_knowledge | "
-        "appeared_out_of_nowhere | unknown",
-    )
-    context: str = Field(default="", description="首次出现的上下文句子（≤100 字）")
-
-
-class StateUpdateOut(BaseModel):
-    """单个实体的状态变化。"""
-
-    entity: str = Field(description="实体名")
-    field: str = Field(description="字段名（位置/境界/目标/情绪/装备/性格/立场 等）")
-    value: str = Field(description="新值（字符串或 JSON）")
-    evidence: str = Field(
-        default="",
-        description="正文中的依据（本章哪个事件导致了该变化）",
-    )
-
-
-class InjuryUpdateOut(BaseModel):
-    """损伤变化。
-
-    ★ 只报**有变化**的条目 —— 未变化绝不重复输出
-    （旧项目规则「同值不覆盖、不推进计时，防慢性损伤无限续期」）。
-    """
-
-    entity: str = Field(description="受伤者名字")
-    name: str = Field(description="损伤名（如「左肩剑创」）")
-    kind: str = Field(description=f"类别：{_enum_values(InjuryKind)}")
-    severity: str = Field(description=f"严重度：{_enum_values(InjurySeverity)}")
-    status: str = Field(description=f"状态：{_enum_values(InjuryStatus)}")
-    recov: str = Field(default="", description="恢复方向（新发/恶化时给）")
-    evidence: str = Field(default="", description="正文依据")
-
-
-class EventOut(BaseModel):
-    """关键事件。
-
-    ★ 动作（查看/记录/离开/拾取/值守）属于**事件**，不属于关系 ——
-    旧项目把动作写进关系表，导致 966 条关系里 86.7% 是非人际关系。
-    """
-
-    story_time: str = Field(default="", description="故事内时间")
-    location: str = Field(default="", description="地点名")
-    participants: list[str] = Field(default_factory=list, description="参与者名字")
-    description: str = Field(description="事件描述")
-    consequence: str = Field(default="", description="后果/影响")
-
-
-class RelationUpdateOut(BaseModel):
-    """**社会关系**变化（只抽关系，不抽动作）。"""
-
-    from_entity: str = Field(description="关系主体名")
-    to_entity: str = Field(description="关系客体名")
-    kind: str = Field(description=f"关系类型：{_enum_values(RelationKind)}")
-    intensity: int = Field(default=50, ge=0, le=100, description="强度 0~100")
-    sentiment: str = Field(
-        default=RelationSentiment.NEUTRAL.value,
-        description=f"情感倾向：{_enum_values(RelationSentiment)}",
-    )
-    surface_facing: str = Field(default="", description="世人所知的关系表现")
-    true_facing: str = Field(default="", description="真实立场（与表面不同即有暗线张力）")
-    is_mutual: bool = Field(default=True, description="是否双向关系")
-    evidence: str = Field(default="", description="正文依据")
-
-
-class SceneExtractionOut(BaseModel):
-    """`scene_extractor` 的输出：事件 + 状态 + 损伤。"""
-
-    summary: str = Field(description="本章梗概（80 字内）")
-    events: list[EventOut] = Field(default_factory=list, description="2~5 条关键事件")
-    state_updates: list[StateUpdateOut] = Field(default_factory=list)
-    injury_updates: list[InjuryUpdateOut] = Field(default_factory=list)
-    deaths: list[str] = Field(default_factory=list, description="本章死亡的角色名")
-    entities: list[EntityMentionOut] = Field(
-        default_factory=list, description="本章出现的实体（供实体归一）"
-    )
-    unsupported: list[str] = Field(
-        default_factory=list,
-        description="无引入依据的名词（凭空出现/无依据回忆/无依据知晓）",
-    )
-
-
-class EntityResolutionOut(BaseModel):
-    """`entity_resolver` 的输出：提及 → 既有实体 或 新建。"""
-
-    mentions: list[str] = Field(description="本章出现的实体名")
-    links: dict[str, int] = Field(
-        default_factory=dict,
-        description="提及名 → 既有实体 ID（能对上时给出）",
-    )
-    new_canonical: dict[str, str] = Field(
-        default_factory=dict,
-        description="提及名 → 规范名（新建实体或归一到既有正名时给出）",
-    )
-
-
-class RelationExtractionOut(BaseModel):
-    """`relation_extractor` 的输出：只抽社会关系。"""
-
-    relations: list[RelationUpdateOut] = Field(default_factory=list)
+#
+# 为什么拆出去：本文件撞了契约规则 10 的 800 行上限。
+# 拆分依据是**职责**（规划 vs 抽取），不是凑行数。
+#
+# 为什么在这里**再导出**而不是让调用方改 import：
+#   · `graph/nodes/extractors.py` 等已从本模块导入这些名字；
+#   · 再导出让"定义搬家"对调用方**零影响**，改名风波不会混进这次修复。
+#   · 单一来源仍是 `extraction_schemas.py`（本处只是别名，不是副本）。
+from storyforge.infra.llm.extraction_schemas import (  # noqa: E402
+    EntityMentionOut,
+    EntityResolutionOut,
+    EventOut,
+    InjuryUpdateOut,
+    RelationExtractionOut,
+    RelationUpdateOut,
+    SceneExtractionOut,
+    StateUpdateOut,
+)
 
 
 # --------------------------------------------------------------------------- #

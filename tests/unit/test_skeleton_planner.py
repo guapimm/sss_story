@@ -225,7 +225,7 @@ def test_skeleton_must_include_new_factions() -> None:
 
 
 def test_skeleton_must_reference_new_locations() -> None:
-    """★ 新地图必须在骨架的线/段落里有对应安排，否则细纲不会安排换场。
+    """★ 新地图必须在骨架里落实，否则细纲不会安排换场。
 
     旧项目实测地理熵：book 24 后半本新增地点 **0**、book 23 **1**。
     """
@@ -237,10 +237,59 @@ def test_skeleton_must_reference_new_locations() -> None:
             for a in good_skeleton().arcs
         ],
         segments=["接手值夜", "头一桩委托", "封锁前夜", "门第一次开启"],
+        places=["老档案馆", "闸口外旧城区"],  # 不含"西郊水塔"
     )
     issues = validate_skeleton(sk, make_volume(new_locations=["西郊水塔"]))
-    assert any("未提及本卷新地图" in i for i in issues)
+    assert any("未落实本卷新地图" in i for i in issues)
     assert any("西郊水塔" in i for i in issues)
+
+
+def test_new_location_satisfied_via_places_field() -> None:
+    """★ 地点写进 `places` 即算落实 —— 这是本字段存在的理由。
+
+    ## 实测背景（3 本书卡在同一处，D-16 必修）
+
+    原先 `SkeletonOut` **没有地点字段**，校验器只能在 `arcs` + `segments` 的
+    自由文本里子串搜索地名。于是同一个要求对模型的可执行程度与「新势力」
+    完全不同（那边有 `factions` 字段，照抄进去即可）。
+
+    书 16 取证：模型把「警察局重案组」正确填进了 `factions`，
+    但 `arcs`/`segments` 里没有它 —— **不是漏了，是没地方放**：
+    「故事线」讲的是剧情，地名是场景属性，两者不在同一抽象层次。
+
+    因此加 `places` 字段，让"本卷用到哪些地点"成为一等公民。
+    本测试锁定「写进 places 就通过」，防止有人回退成"必须在故事线里搜到"。
+    """
+    sk = good_skeleton(
+        arcs=[
+            ArcOut(key=a.key, kind=a.kind,
+                   description=a.description.replace("长明楼", "老档案馆"),
+                   chapter_span=a.chapter_span)
+            for a in good_skeleton().arcs
+        ],
+        segments=["接手值夜", "头一桩委托", "封锁前夜", "门第一次开启"],
+        places=["老档案馆", "西郊水塔"],  # ★ 只在 places 里，故事线里没有
+    )
+    issues = validate_skeleton(sk, make_volume(new_locations=["西郊水塔"]))
+    assert not any("新地图" in i for i in issues), issues
+
+
+def test_new_location_still_works_via_arcs_fallback() -> None:
+    """★ 旧的"故事线里提到"通路**保留**为回退 —— 不制造新的失败面。
+
+    `places` 为空时（老产物 / 模型漏填字段）行为必须与改动前一致。
+    """
+    sk = good_skeleton(
+        arcs=[
+            ArcOut(key=a.key, kind=a.kind,
+                   description=a.description + ("（西郊水塔）" if a.kind == "opposition" else ""),
+                   chapter_span=a.chapter_span)
+            for a in good_skeleton().arcs
+        ],
+        places=[],  # ★ 故意留空
+    )
+    issues = validate_skeleton(sk, make_volume(new_locations=["西郊水塔"]))
+    assert not any("新地图" in i for i in issues), issues
 
 
 async def test_build_rejects_volume_missing_escalation() -> None:

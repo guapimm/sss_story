@@ -132,6 +132,34 @@ def _summarize_validation_error(exc: Exception | None) -> str:
     return "\n".join(lines) if lines else str(exc)[:400]
 
 
+def _describe_error(exc: Exception | None) -> str:
+    """把异常渲染成**保证非空**的一行描述（归因用）。
+
+    ## 为什么需要它（本轮踩到两次的同一类缺陷）
+
+    报错写成 `f"...：{exc}"` 时，若 `str(exc)` 为空，冒号后面就什么都没有：
+
+        节点 detail_planner 调用失败（3 次尝试）：          ← 无法归因
+
+    实测两个来源：
+
+      · **空输出分支**未写 `last_err` → `last_err is None` → 打印 "None"（已修）
+      · **超时分支** `last_err = exc`，而 `asyncio.wait_for` 的
+        `TimeoutError` **不带消息**（实测 `str(exc) == ''`、`args == ()`）
+
+    两者表现一模一样，成因却不同 —— 与其逐个分支去堵，
+    不如在出口统一保证：**永远给出可归因的文本**。
+    """
+    if exc is None:
+        return "（无错误详情：last_err 未设置，是调用方的缺陷）"
+    text = str(exc).strip()
+    if text:
+        return text
+    # 有异常对象但没有消息 —— 至少把类型与 args 带出来
+    args = getattr(exc, "args", ())
+    return f"{type(exc).__name__}" + (f"（args={args!r}）" if args else "（无消息）")
+
+
 def _repair_json(s: str) -> str:
     """修复模型 JSON 输出的**常见机械瑕疵**。
 
@@ -420,13 +448,21 @@ class LLMClient:
                     ),
                     timeout=self.config.timeout_s,
                 )
-            except TimeoutError as exc:
-                last_err = exc
+            except TimeoutError:
+                # ★ 超时也要写**带信息**的 last_err（见 `_timeout_error`）。
+                last_err = self._timeout_error(
+                    model_id=model.id, attempt=attempt,
+                    prompt_chars=len(system) + len(user),
+                )
                 self.records.append(
                     self._record(
                         ctx, model, provider, CallStatus.TIMEOUT, UsageMetrics(),
                         started=started, error_type="TimeoutError",
-                        extra={"finish_reason": None},
+                        extra={
+                            "finish_reason": None,
+                            "timeout_s": self.config.timeout_s,
+                            "prompt_total_chars": len(system) + len(user),
+                        },
                     )
                 )
                 await self._sleep_backoff(attempt)
@@ -451,17 +487,13 @@ class LLMClient:
             usage = self._parse_usage(usage_raw)
             finish_reason = (usage_raw or {}).get("finish_reason")
 
-            # ★ 空输出：必须记录，且必须带诊断信息
+            # ★ 空输出：必须记录，且必须带诊断信息（见 `_blank_error`）
             if not (text or "").strip():
-                # ★ 必须把空输出也记进 `last_err` ——
-                # 否则 max_attempts 用尽后 `last_err` 仍是 None，
-                # 报错变成 "节点 detail_planner 调用失败（3 次尝试）："（**空的**），
-                # 完全无法归因。实测踩到：多书测试里细纲阶段失败，
-                # 日志里只有这一句没有原因的话。
-                last_err = LLMError(
-                    f"空输出（finish_reason={finish_reason or 'unknown'}，"
-                    f"prompt {len(system) + len(user)} 字符，"
-                    f"model={model.id} reasoning={usage.reasoning_tokens}）"
+                prompt_chars = len(system) + len(user)
+                last_err = self._blank_error(
+                    finish_reason=finish_reason, model_id=model.id,
+                    prompt_chars=prompt_chars,
+                    reasoning_tokens=usage.reasoning_tokens,
                 )
                 self.records.append(
                     self._record(
@@ -472,7 +504,7 @@ class LLMClient:
                             "finish_reason": finish_reason or "unknown",
                             "context_breakdown": context_breakdown,
                             "prompt_prefix": prompt_prefix,
-                            "prompt_total_chars": len(system) + len(user),
+                            "prompt_total_chars": prompt_chars,
                         },
                     )
                 )
@@ -480,7 +512,7 @@ class LLMClient:
                     "blank output: node=%s model=%s attempt=%d finish_reason=%s "
                     "reasoning=%s prompt_chars=%d",
                     node, model.id, attempt, finish_reason,
-                    usage.reasoning_tokens, len(system) + len(user),
+                    usage.reasoning_tokens, prompt_chars,
                 )
                 await self._sleep_backoff(attempt)
                 continue
@@ -507,8 +539,14 @@ class LLMClient:
                 model=model.id, provider=provider.name,
             )
 
+        # ★ 兜底：绝不让报错信息在冒号后面空着。
+        #
+        # 这一类缺陷本轮踩到**两次**（空输出未写 last_err；TimeoutError 的
+        # str() 为空），两次都表现为"节点 X 调用失败（3 次尝试）："后面什么都没有，
+        # 完全无法归因。与其逐个分支去堵，不如在出口统一保证非空。
         raise LLMError(
-            f"节点 {node} 调用失败（{self.config.max_attempts} 次尝试）：{last_err}"
+            f"节点 {node} 调用失败（{self.config.max_attempts} 次尝试）："
+            f"{_describe_error(last_err)}"
         )
 
     async def complete_structured(
@@ -603,6 +641,52 @@ class LLMClient:
     def _is_rate_limit(exc: Exception) -> bool:
         s = str(exc).lower()
         return "429" in s or "rate" in s or "too many" in s
+
+    def _blank_error(
+        self, *, finish_reason: str | None, model_id: str,
+        prompt_chars: int, reasoning_tokens: int | None,
+    ) -> LLMError:
+        """构造**带诊断信息**的空输出错误。
+
+        ## 为什么必须记进 `last_err`
+
+        否则 `max_attempts` 用尽后 `last_err` 仍是 `None`，报错变成：
+
+            节点 detail_planner 调用失败（3 次尝试）：        ← 冒号后为空
+
+        完全无法归因。实测踩到：多书测试里细纲阶段失败，
+        日志里只有这一句没有原因的话。
+
+        `finish_reason` 是这里最关键的一条 —— 它区分
+        「模型主动停」（`stop`）与「被输出上限截断」（`length`）。
+        """
+        return LLMError(
+            f"空输出（finish_reason={finish_reason or 'unknown'}，"
+            f"prompt {prompt_chars} 字符，"
+            f"model={model_id} reasoning={reasoning_tokens}）"
+        )
+
+    def _timeout_error(
+        self, *, model_id: str, attempt: int, prompt_chars: int
+    ) -> LLMError:
+        """构造**带上下文**的超时错误。
+
+        ## 为什么不能直接 `last_err = exc`（实测踩到第二次）
+
+        `asyncio.wait_for` 抛的 `TimeoutError` **不带任何消息**
+        （实测 `str(exc) == ''`、`args == ()`）。直接赋值会让最终报错变成：
+
+            节点 detail_planner 调用失败（3 次尝试）：        ← 冒号后为空
+
+        完全无法归因 —— 当时只能靠"这轮耗时 1147 秒（平时 263 秒）"去猜。
+        这与空输出分支（`last_err` 为 `None`）是**同一类**缺陷：
+        **报错信息里必须带足以归因的上下文**。
+        """
+        return LLMError(
+            f"请求超时（上限 {self.config.timeout_s}s，"
+            f"attempt {attempt}/{self.config.max_attempts}，"
+            f"model={model_id}，prompt {prompt_chars} 字符）"
+        )
 
     async def _sleep_backoff(self, attempt: int) -> None:
         """指数退避。

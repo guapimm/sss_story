@@ -579,3 +579,61 @@ async def test_blank_output_error_message_is_not_empty() -> None:
     assert msg.rstrip().endswith("：") is False, f"报错信息为空：{msg!r}"
     assert "length" in msg, "必须带 finish_reason（区分「模型主动停」与「被截断」）"
     assert "空输出" in msg
+
+
+async def test_timeout_error_message_is_not_empty() -> None:
+    """★ 超时的报错**必须带诊断信息** —— 与上一条同一类缺陷的第二个来源。
+
+    ## 实测踩到（第二轮）
+
+    `asyncio.wait_for` 抛的 `TimeoutError` **不带任何消息**
+    （实测 `str(exc) == ''`、`args == ()`）。直接 `last_err = exc` 会让报错变成：
+
+        节点 detail_planner 调用失败（3 次尝试）：          ← 冒号后为空
+
+    完全无法归因 —— 当时只能靠"这轮耗时 1147 秒（平时 263 秒）"去猜是超时。
+    旁证：1147 秒 ≈ 3 次尝试 × 600 秒超时上限，与超时三次的形态吻合。
+    """
+    import asyncio
+
+    from storyforge.infra.llm.client import ClientConfig, LLMClient, LLMError
+
+    async def _hang(**_kw):
+        await asyncio.sleep(30)
+        return "", {}
+
+    client = LLMClient(_hang, config=ClientConfig(
+        max_attempts=2, timeout_s=1, backoff_base_s=0.01))
+    with pytest.raises(LLMError) as ei:
+        await client.complete(node="detail_planner", system="s", user="u")
+
+    msg = str(ei.value)
+    assert msg.rstrip().endswith("：") is False, f"报错信息为空：{msg!r}"
+    assert "超时" in msg
+    # 必须带足以归因的上下文（超时上限 / 哪次尝试 / 模型 / prompt 规模）
+    assert "timeout" in msg.lower() or "超时" in msg
+    assert "prompt" in msg.lower() or "字符" in msg
+
+    # 调用记录也要能看出是超时
+    timeouts = [r for r in client.records if r.error_type == "TimeoutError"]
+    assert timeouts, "超时必须被记录（否则无法统计超时率）"
+
+
+def test_describe_error_never_empty() -> None:
+    """★ `_describe_error` 是**出口兜底**：绝不让冒号后面空着。
+
+    这一类缺陷本轮踩到两次（空输出未设 last_err / TimeoutError 无消息），
+    与其逐个分支去堵，不如在出口统一保证。
+    """
+    from storyforge.infra.llm.client import _describe_error
+
+    # None：调用方的缺陷，要**显式说出来**而不是打印 "None"
+    s = _describe_error(None)
+    assert s.strip() and s != "None"
+
+    # 无消息的异常：至少带出类型
+    assert _describe_error(TimeoutError()).strip()
+    assert "TimeoutError" in _describe_error(TimeoutError())
+
+    # 有消息的异常：原样保留
+    assert _describe_error(ValueError("bad value")) == "bad value"

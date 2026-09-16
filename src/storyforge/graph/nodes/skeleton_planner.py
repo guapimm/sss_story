@@ -61,11 +61,16 @@ SKELETON_PLANNER_SYSTEM = """你是长篇小说结构师。为**当前这一卷*
 - `characters`：本卷主要角色（3~6 个）。
 - `factions`：本卷登场势力（4~8 股）。**必须包含卷级台阶指定的新势力**，
   并为每股给出立场与目标。
+- `places`：本卷用到的**地点**（3~8 个）。**必须包含卷级台阶指定的新地图**。
+  只写地点本身（如「明城警察局重案组办公区」），**不要写剧情**。
 
 ## 硬性要求
 
-1. **必须落实本卷的横向扩张**：给出的势力必须涵盖台阶指定的新势力；
-   故事线的场景必须用到台阶指定的新地图。长篇最常见的失败是**全书困在一个地方**。
+1. **必须落实本卷的横向扩张**（长篇最常见的失败是**全书困在一个地方**）：
+   · 台阶指定的**新势力**必须出现在 `factions` 里；
+   · 台阶指定的**新地图**必须出现在 `places` 里。
+   ⚠️ 这是**两个分开的字段**，别把地点塞进 `factions`、也别只写进故事线描述 ——
+   故事线讲的是剧情，地点写在 `places` 里才是它的位置。
 2. **关系线不能只有"同门/师徒"**：需要有会变化的张力
    （结盟又反目、表面客气暗中提防、从敌对到并肩）。
 3. **对立线要写出赌注**：输了会失去什么（不是"打不过"而是具体代价）。
@@ -88,13 +93,14 @@ SKELETON_PLANNER_SYSTEM = """你是长篇小说结构师。为**当前这一卷*
   ],
   "segments": ["第一段的目标", "第二段的目标（必须与上一条不同）"],
   "characters": ["角色甲", "角色乙", "角色丙"],
-  "factions": ["势力甲", "势力乙", "势力丙", "势力丁"]
+  "factions": ["势力甲", "势力乙", "势力丙", "势力丁"],
+  "places": ["地点甲", "地点乙", "地点丙"]
 }
 ```
 
 ⚠️ `arcs` 每条都必须有 `key` / `kind` / `description` / `chapter_span` 四项；
 `kind` 只能是 `core` / `relationship` / `opposition` / `sub` 之一（英文小写）。
-`segments` / `characters` / `factions` 都是**字符串数组**。
+`segments` / `characters` / `factions` / `places` 都是**字符串数组**。
 
 **只输出 JSON**，不要任何解释或代码块标记。"""
 
@@ -353,17 +359,34 @@ def validate_skeleton(sk: SkeletonOut, volume: VolumePlan | None = None) -> list
                 f"骨架未落实本卷台阶指定的新势力：{missing_fac} —— "
                 f"台阶规定了扩张，骨架必须落地，否则又回到「全书困在一处」"
             )
+        # ★ 地点：优先查**专门的 `places` 字段**，而不是在剧情文本里搜地名。
+        #
+        # ## 为什么改成这样（实测：3 本书卡在同一处，D-16 必修）
+        #
+        # 原先只在 `arcs` + `segments` 的自由文本里子串搜索地名，而
+        # **schema 里没有地点字段** —— 于是同一个要求对模型的可执行程度
+        # 与「新势力」完全不同（那边有 `factions` 字段，照抄进去即可）。
+        #
+        # 实测书 16：模型把「警察局重案组」正确填进了 `factions`，
+        # 但 `arcs`/`segments` 里没有它 —— **不是漏了，是没地方放**。
+        # 「故事线」是剧情层次，地名是场景属性，不该指望前者包含后者。
+        #
+        # ⚠️ **保留** arcs/segments 作为**回退**通路（`places` 为空时仍查它们）：
+        # 老产物 / 模型漏填 `places` 时行为不变，不制造新的失败面。
+        places = [p for p in (getattr(sk, "places", None) or []) if str(p).strip()]
+        places_blob = " ".join(places)
         loc_blob = " ".join(
             f"{a.description} {a.key}" for a in arcs
         ) + " " + " ".join(segs)
         missing_loc = [
             loc for loc in volume.new_locations
-            if loc and not _mentions(loc_blob, loc)
+            if loc and not _mentions(places_blob, loc) and not _mentions(loc_blob, loc)
         ]
         if missing_loc:
             issues.append(
-                f"骨架的故事线/段落未提及本卷新地图：{missing_loc} —— "
-                f"新地图必须在骨架里有对应的线，否则细纲不会安排换场"
+                f"骨架未落实本卷新地图：{missing_loc} —— "
+                f"新地图必须出现在 `places` 字段里（`arcs`/`segments` 里提到也算），"
+                f"否则细纲不会安排换场，长篇会退化成「全书困在一个地方」"
             )
     return issues
 

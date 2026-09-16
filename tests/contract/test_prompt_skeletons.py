@@ -55,6 +55,23 @@ _NESTED_REQUIRED: dict[str, tuple[str, ...]] = {
     "SkeletonOut": ("arcs", "kind", "segments", "characters", "factions"),
 }
 
+#: ★ **有默认值、但校验器会强制要求**的顶层字段 → 也必须写进 prompt 骨架。
+#:
+#: ## 为什么需要这份登记（实测发现的契约漏洞）
+#:
+#: `test_skeleton_covers_all_required_top_level_fields` 只查 `is_required()`，
+#: 而带 `default_factory` 的字段不算必填 → **契约漏掉它们**。
+#:
+#: 后果实测：我把 `places` 从 prompt 骨架里删掉，**契约测试全绿** ——
+#: 但 `validate_skeleton` 会因为 `new_locations` 未落实而判失败，
+#: 而模型根本不知道要输出这个字段（prompt 没写）→ 必然整卷失败。
+#:
+#: 一个"抓不到问题"的契约测试等于没有（我主动做了这次证伪才发现的）。
+#: 登记原则：**校验器会拿它判成败** ⇒ 必须进 prompt，哪怕它有默认值。
+_PROMPT_REQUIRED_OPTIONAL: dict[str, tuple[str, ...]] = {
+    "SkeletonOut": ("places",),
+}
+
 
 def _read(rel: str) -> str:
     return (SRC_ROOT / rel).read_text(encoding="utf-8")
@@ -134,6 +151,40 @@ def test_skeleton_covers_all_required_top_level_fields(node, const, schema_name,
     assert not missing, (
         f"{node} 的骨架漏了必填字段 {sorted(missing)} —— "
         f"模型很可能就不给它们，而它们是必填"
+    )
+
+
+@pytest.mark.parametrize("node,const,schema_name,rel", STRUCTURED_NODES)
+def test_skeleton_covers_validator_enforced_optional_fields(
+    node, const, schema_name, rel
+) -> None:
+    """★ **校验器会据以判成败**的字段必须在骨架里 —— 哪怕它有默认值。
+
+    ## 为什么单独一条（实测发现的漏洞）
+
+    上一条只查 `is_required()`。而 `SkeletonOut.places` 带 `default_factory`，
+    不算必填 → **漏检**。实测把 `places` 从 prompt 骨架删掉后契约**全绿**，
+    但 `validate_skeleton` 会因"新地图未落实"判失败，而模型根本不知道
+    要输出该字段（prompt 没写）→ 必然整卷失败。
+
+    登记原则：**校验器会拿它判成败 ⇒ 必须进 prompt**。
+    """
+    want = _PROMPT_REQUIRED_OPTIONAL.get(schema_name, ())
+    if not want:
+        pytest.skip(f"{schema_name} 未登记'校验器强制的可选字段'")
+    import storyforge.infra.llm.schemas as S
+
+    schema = getattr(S, schema_name)
+    # 登记的名字必须真在 schema 里（防登记笔误让本条形同虚设）
+    unknown = [w for w in want if w not in schema.model_fields]
+    assert not unknown, f"登记了 schema 里不存在的字段：{unknown}"
+
+    blob = "\n".join(re.findall(r"```json\s*(.+?)```", _prompt_constant(rel, const), re.S))
+    missing = [w for w in want if f'"{w}"' not in blob]
+    assert not missing, (
+        f"{node} 的 prompt 骨架漏了 {sorted(missing)} —— 校验器会拿它们判成败，"
+        f"但模型不知道要输出（prompt 没写）→ 必然失败。"
+        f"（这些字段有默认值，所以不会被'必填字段'那条测试抓到）"
     )
 
 

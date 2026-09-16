@@ -1,0 +1,27 @@
+{
+ "results": [
+  {
+   "book_id": 16,
+   "genre": "mystery",
+   "topic": "现代悬疑：一桩十二年前的旧案重开，唯一的目击者如今是负责此案的警官",
+   "bible_ok": true,
+   "bible_calls": 0,
+   "volume_ok": true,
+   "volumes": 3,
+   "repair_rounds": 0,
+   "skeleton_ok": true,
+   "detail_ok": false,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 1134.571323400014,
+   "failures": [
+    "detail:error:细纲生成调用失败：节点 detail_planner 调用失败（3 次尝试）：请求超时（上限 300.0s，attempt 3/3，model=mimo-v2.5，prompt 3635 字符）"
+   ]
+  }
+ ],
+ "failures": {
+  "detail:error:细纲生成调用失败：节点 detail_planner 调用失败（3 次尝试）：请求超时（上限 300.0s，attempt 3/3，model=mimo-v2.5，prompt 3635 字符）": [
+   16
+  ]
+ }
+}
