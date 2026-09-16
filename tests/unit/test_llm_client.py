@@ -498,3 +498,84 @@ def test_validation_summary_handles_plain_exception() -> None:
 
     s = _summarize_validation_error(ValueError("Invalid JSON: expected ':'"))
     assert "Invalid JSON" in s
+
+# --------------------------------------------------------------------------- #
+# ★ 输出预算必须下发（实测缺陷：131072 声明了却从不下发）
+# --------------------------------------------------------------------------- #
+
+
+async def test_max_tokens_is_always_sent() -> None:
+    """★ 实测缺陷：`max_output_tokens` 从配置读了却**从未下发给 API**。
+
+    只有调用方显式传参才设置 `max_tokens`，而所有节点都没传
+    → 实际生效的是 provider 默认值（MiMo 上约 8000）
+    → `detail_planner` 把 98.75% 花在 reasoning（8000 里 7900）
+    → `finish_reason=length`，正文一个字没写出来，三次尝试全废。
+
+    这是旧项目 `max_tokens = max(4096, reasoning*4)` 的同一类失败：
+    **思考把输出挤没**。修法是默认用模型声明的上限，而不是 provider 默认值。
+    """
+    from storyforge.infra.llm.capability import get_registry
+
+    client, transport = make_client()
+    await client.complete(node="detail_planner", system="s", user="u")
+
+    params = transport.calls[0]["params"]
+    assert "max_tokens" in params, (
+        "必须下发 max_tokens —— 不下发就会用 provider 默认值，"
+        "而思考可能把它吃光（实测 finish_reason=length 且正文为空）"
+    )
+    model, _ = get_registry().route("detail_planner")
+    assert params["max_tokens"] > 0
+    # 必须受上限约束（不能把模型完整上下文长度当输出预算）
+    assert params["max_tokens"] <= 32768, params["max_tokens"]
+    # 且不低于下限（保证正文有空间）
+    assert params["max_tokens"] >= 4096, params["max_tokens"]
+    del model
+
+
+async def test_explicit_max_output_tokens_overrides_default() -> None:
+    """调用方显式指定的预算必须原样生效（章节写作会传具体值）。"""
+    client, transport = make_client()
+    await client.complete(
+        node="chapter_writer", system="s", user="u", max_output_tokens=1234
+    )
+    assert transport.calls[0]["params"]["max_tokens"] == 1234
+
+
+async def test_output_budget_respects_cap_for_huge_model_declaration() -> None:
+    """★ 模型声明 131072 时**不能**照搬 —— 那会让每次调用预留巨额额度。
+
+    上限由 `ClientConfig.max_output_tokens_cap` 控制（默认 32768）。
+    """
+    from storyforge.infra.llm.capability import load_registry
+
+    reg = load_registry()
+    model, provider = reg.route("detail_planner")
+    assert model.max_output_tokens > 32768, "前提：MiMo 声明了很大的输出上限"
+
+    client, transport = make_client()
+    await client.complete(node="detail_planner", system="s", user="u")
+    assert transport.calls[0]["params"]["max_tokens"] == 32768
+
+
+async def test_blank_output_error_message_is_not_empty() -> None:
+    """★ 空输出的报错**必须带诊断信息**，不能只有一句没原因的话。
+
+    实测踩到：多书测试里细纲阶段失败，日志只有
+    「节点 detail_planner 调用失败（3 次尝试）：」——**冒号后面是空的**，
+    完全无法归因（是模型不想写？被截断？超时？）。
+    """
+    from storyforge.infra.llm.client import LLMError
+
+    client, _ = make_client([("", {
+        "prompt_tokens": 5000, "completion_tokens": 8000,
+        "reasoning_tokens": 7900, "finish_reason": "length",
+    })])
+    with pytest.raises(LLMError) as ei:
+        await client.complete(node="detail_planner", system="s", user="u")
+
+    msg = str(ei.value)
+    assert msg.rstrip().endswith("：") is False, f"报错信息为空：{msg!r}"
+    assert "length" in msg, "必须带 finish_reason（区分「模型主动停」与「被截断」）"
+    assert "空输出" in msg

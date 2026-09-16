@@ -273,6 +273,12 @@ class ClientConfig:
     backoff_max_s: float = 60.0
     #: 结构化输出最多修复重试次数
     structured_retries: int = 2
+    #: 输出预算下限（token）。保证正文不被思考挤没 ——
+    #: 实测 MiMo 上 `detail_planner` 曾把 98.75% 的 completion 花在 reasoning，
+    #: `finish_reason=length` 且正文为空（旧项目同类失败见模块注释）。
+    min_output_tokens: int = 4096
+    #: 输出预算上限（token）。防止误配成模型的完整上下文长度而白烧额度。
+    max_output_tokens_cap: int = 32768
 
 
 class LLMClient:
@@ -357,8 +363,37 @@ class LLMClient:
                 )
 
         params: dict[str, Any] = dict(policy)
-        if max_output_tokens is not None:
-            params["max_tokens"] = max_output_tokens
+
+        # ★ 输出预算：显式下发 `max_tokens`，否则会被 provider 默认值坑死。
+        #
+        # ## 实测发现的真实缺陷（多书测试书 16 细纲阶段）
+        #
+        # `ModelCapability.max_output_tokens` 从 `providers.toml` 读了进来
+        # （MiMo 声明 131072），但**从未下发给 API** —— 只有调用方显式传
+        # `max_output_tokens` 才设置，而所有节点都没传。
+        # 于是实际生效的是 provider 默认值（MiMo 上实测约 8000）：
+        #
+        #     prompt 4126 字符 → completion=8000, reasoning=7900（98.75%）
+        #     finish_reason=length → 正文一个字都没写出来 → 三次尝试全废
+        #
+        # 这与旧项目 `max_tokens = max(4096, reasoning*4)`（思考与输出共用上限
+        # → 可用输出预算只剩 3x）是**同一类失败**：思考把输出挤没。
+        #
+        # ## 修法：默认用模型声明的上限，而不是 provider 默认值
+        #
+        # 调用方仍可显式覆盖（章节写作会传具体值）。这里只保证
+        # 「不传」时**不会**退化成一个小到被思考吃光的默认值。
+        #
+        # 两端都夹：下限保证正文有空间，上限防止把模型的完整上下文长度
+        # 当成输出预算（那会让每次调用都预留巨额额度）。
+        budget = max_output_tokens
+        if budget is None:
+            budget = min(
+                max(model.max_output_tokens, self.config.min_output_tokens),
+                self.config.max_output_tokens_cap,
+            )
+        if budget > 0:
+            params["max_tokens"] = budget
         # ★ 原生 JSON 模式：只在模型**声明支持**时下发。
         #
         # 实测（小米 MiMo）：不加这个参数时模型会把 JSON 包在 ```json 里，
@@ -425,7 +460,8 @@ class LLMClient:
                 # 日志里只有这一句没有原因的话。
                 last_err = LLMError(
                     f"空输出（finish_reason={finish_reason or 'unknown'}，"
-                    f"prompt {len(system) + len(user)} 字符）"
+                    f"prompt {len(system) + len(user)} 字符，"
+                    f"model={model.id} reasoning={usage.reasoning_tokens}）"
                 )
                 self.records.append(
                     self._record(
@@ -441,8 +477,10 @@ class LLMClient:
                     )
                 )
                 logger.warning(
-                    "blank output: node=%s model=%s attempt=%d finish_reason=%s",
+                    "blank output: node=%s model=%s attempt=%d finish_reason=%s "
+                    "reasoning=%s prompt_chars=%d",
                     node, model.id, attempt, finish_reason,
+                    usage.reasoning_tokens, len(system) + len(user),
                 )
                 await self._sleep_backoff(attempt)
                 continue
@@ -456,6 +494,9 @@ class LLMClient:
                         "context_breakdown": context_breakdown,
                         "prompt_prefix": prompt_prefix,
                         "prompt_total_chars": len(system) + len(user),
+                        # ★ 缺陷1/A-16诊断：成功也记输出字符数 ——
+                        # 空输出/截断归因需要"输出多长"，不能只记 prompt 多长
+                        "response_chars": len(text or ""),
                     },
                 )
             )

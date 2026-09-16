@@ -102,38 +102,86 @@ class BookResult:
 
 
 def _classify(text: str) -> str:
-    """把失败信息归类 —— 用于判断"是通用缺陷还是单书特例"。"""
+    """把失败信息归类 —— 用于判断"是通用缺陷还是单书特例"。
+
+    ## ★ 排序即语义：广匹配必须排在窄匹配之后
+
+    原先的实现在这里有个**真实 bug**（已修）：`("卷", "volume:other")` 这个
+    **极宽**的匹配排在骨架的两条之前，而骨架消息里恰好含「本**卷**」二字：
+
+        "骨架未落实本卷台阶指定的新势力：…"
+        "骨架的故事线/段落未提及本卷新地图：…"
+
+    → 两条骨架分支永远命中不到（**死代码**），书 13/15 的骨架失败被误标成
+      `volume:other`。多书测试的整个价值就是"按类别数书数"，分类错了，
+      `D-16` 的「≥3 本 = 通用缺陷」判据就跟着错。
+
+    ## 修法：按**特异度降序**排列，而不是靠人肉维护顺序
+
+    规则：
+      1. 长的、具体的短语在前（`未提及本卷新地图` 比 `卷` 具体得多）
+      2. 单字/双字宽匹配（`卷`、`角色`、`标题`…）一律垫底
+      3. 每条匹配附一个 `specificity`（关键词长度），自动降序排 ——
+         这样**将来加新规则不需要人工判断该插在哪一行**
+
+    另外：`volume:other` 保留但改名为 `volume:unclassified`，
+    让"没被细分类"这件事在报表里**看得见**，而不是伪装成一个具体类别。
+    """
     t = text or ""
-    for key, label in (
-        ("世界观", "bible:worldview"),
-        ("圣经过薄", "bible:too_thin"),
-        ("硬规则", "bible:rules"),
-        ("术语", "bible:terms"),
-        ("无法解析", "bible:parse"),
-        ("等其他字段", "bible:misnest"),
-        ("结构闸门", "volume:gate"),
-        ("新势力", "volume:new_factions"),
-        ("新地图", "volume:new_locations"),
-        ("卷", "volume:other"),
+    # (关键词, 标签) —— 顺序无关，下面按关键词长度自动降序
+    rules: tuple[tuple[str, str], ...] = (
+        # ── 窄匹配（长短语，指哪打哪）──
         ("未落实本卷台阶指定的新势力", "skeleton:new_factions"),
         ("未提及本卷新地图", "skeleton:new_locations"),
+        # ⚠️ 历史规则：`BibleOut` 已改为**自动归位**（不再产生这条消息），
+        #    但旧的 `_diag_*.json` 里存着它 —— 保留映射，历史报表仍可复现。
+        #    新跑出来的书不可能再落到这一类；若又出现了，说明归位漏了某种形状。
+        ("其他字段的内容", "bible:misnest"),
+        ("字段名开头", "bible:misnest"),
+        ("圣经过薄", "bible:too_thin"),
+        ("无法解析", "bible:parse"),
+        ("结构闸门", "volume:gate"),
+        # ── 中等 ──
         ("故事线", "skeleton:arcs"),
         ("对立线", "skeleton:opposition"),
         ("关系线", "skeleton:relationship"),
-        ("角色", "skeleton:characters"),
-        ("段落", "skeleton:segments"),
-        ("场景", "detail:scenes"),
-        ("标题", "detail:title"),
+        ("段落目标", "skeleton:segments"),
+        ("新势力", "volume:new_factions"),
+        ("新地图", "volume:new_locations"),
+        ("世界观", "bible:worldview"),
+        ("硬规则", "bible:rules"),
+        ("术语", "bible:terms"),
+        # ── 细纲 ──
+        #
+        # ⚠️ 实测发现：细纲的失败消息里**常常没有「细纲」二字** ——
+        #    它们是「地点跳变…」「本批应输出 15 章…」「场景数 3 < 4」这类
+        #    具体描述。原先只靠 ("细纲", "detail:lint") 匹配，整类都掉进
+        #    `other`，等于细纲的失败原因完全没有分类。
+        #    因此这里按**消息的真实措辞**登记关键词，而不是靠类别名。
+        ("地点跳变", "detail:continuity"),
+        ("场景数", "detail:scenes"),
         ("缺章", "detail:missing"),
-        ("plot", "detail:plot"),
+        ("应输出", "detail:batch_size"),
+        ("逐字重复", "detail:title_dup"),
+        ("不可完整", "detail:scene_incomplete"),
+        ("没有交代时间", "detail:continuity"),
+        # ── 宽匹配（垫底：单/双字，容易误吞）──
         ("细纲", "detail:lint"),
-    ):
+        ("角色", "skeleton:characters"),
+        ("标题", "detail:title"),
+        ("plot", "detail:plot"),
+        ("卷", "volume:unclassified"),
+    )
+    # 按关键词长度降序：越长越具体，优先命中
+    for key, label in sorted(rules, key=lambda kv: -len(kv[0])):
         if key in t:
             return label
     return "other"
 
 
-async def run_one(client: LLMClient, store: ArtifactStore, spec: dict) -> BookResult:
+async def run_one(client: LLMClient, store: ArtifactStore, spec: dict,
+                  args: argparse.Namespace | None = None) -> BookResult:
+    diag = bool(getattr(args, "diag", False))
     deps = GraphDeps(client=client, store=store)
     r = BookResult(book_id=spec["id"], genre=spec["genre"], topic=spec["topic"])
     t0 = time.monotonic()
@@ -168,6 +216,15 @@ async def run_one(client: LLMClient, store: ArtifactStore, spec: dict) -> BookRe
         r.volume_ok = bool(out.get("gate_ok"))
         r.volumes = int(out.get("total_volumes") or 0)
         r.repair_rounds = int(out.get("repair_round") or 0)
+        # ★ A-3 诊断（只加诊断不动逻辑）：落原始 gate_issues 全量（含 code）。
+        # `_classify` 只看 message 子串，会把 7 种闸门码塌缩成 `volume:other`。
+        if diag:
+            _write_diag(f"doc/research/_diag_volume_{bid}.json", {
+                "book_id": bid,
+                "gate_ok": r.volume_ok,
+                "repair_rounds": r.repair_rounds,
+                "gate_issues": out.get("gate_issues") or [],
+            })
         if not r.volume_ok:
             r.failures += [_classify(str(i.get("message", "")))
                            for i in (out.get("gate_issues") or [])]
@@ -186,6 +243,40 @@ async def run_one(client: LLMClient, store: ArtifactStore, spec: dict) -> BookRe
             thread_config(f"b{bid}:skeleton:v1"),
         )
         r.skeleton_ok = not out.get("violations")
+        # ★ A-3 诊断（只加诊断不动逻辑）：落骨架 violations 全量 + 当轮骨架原文
+        # 摘要，供判"真缺失 vs 措辞未命中"（`_mentions` 容错已两次放宽，D-16：
+        # 2 本=待观察，不得再直接调阈值）。
+        if diag:
+            # ★ 优先用**当轮**未通过的骨架（失败时单独落盘的那个），
+            #   读 `skeleton_ref` 在失败时只会读到上一轮的旧产物 ——
+            #   那会让"真缺失 vs 措辞未命中"的判断整体失效（实测踩到）。
+            sk_text = ""
+            sk_src = "none"
+            fail_ref = out.get("last_skeleton_ref") or ""
+            if fail_ref:
+                try:
+                    sk_text = store.read_text(fail_ref)[:4000]
+                    sk_src = "debug(当轮)"
+                except Exception as exc:  # noqa: BLE001
+                    sk_text = f"<读当轮骨架失败：{exc}>"
+                    sk_src = "debug-error"
+            if not sk_text or sk_src != "debug(当轮)":
+                try:
+                    from storyforge.graph.nodes.skeleton_planner import load_skeleton
+                    sk = load_skeleton(store, bid, 1)
+                    sk_text = sk.model_dump_json()[:4000]
+                    sk_src = "artifact(读盘·可能是旧的)"
+                except Exception as exc:  # noqa: BLE001
+                    if not sk_text:
+                        sk_text = f"<无骨架产物：{exc}>"
+                        sk_src = "none"
+            _write_diag(f"doc/research/_diag_skeleton_{bid}.json", {
+                "book_id": bid,
+                "skeleton_ok": r.skeleton_ok,
+                "skeleton_source": sk_src,
+                "violations": out.get("violations") or [],
+                "skeleton_excerpt": sk_text,
+            })
         if not r.skeleton_ok:
             r.failures += [_classify(v) for v in (out.get("violations") or [])]
             r.seconds = time.monotonic() - t0
@@ -203,11 +294,58 @@ async def run_one(client: LLMClient, store: ArtifactStore, spec: dict) -> BookRe
              "refs": {"bible_ref": bible_ref}},
             thread_config(f"b{bid}:detail:v1:1-{n}"),
         )
-        r.detail_ok = not out.get("lint_issues")
-        r.detail_count = len(out.get("detail_refs") or [])
+        # ★ 缺陷1修复：空 lint 不等于成功。三条件缺一即失败 ——
+        # 首轮 LLM 异常会返回空 lint（`detail_planner.py`），若只看 lint
+        # 就会误报 `detail_ok=true` 且 `detail_count=0`（book12/16 的形状）。
+        # 磁盘产物以 `detail_refs` 为准（失败分支无此键，`out.get` 天然区分）。
+        refs = out.get("detail_refs") or []
+        r.detail_ok = (not out.get("lint_issues")
+                       and not (out.get("detail_error") or "")
+                       and len(refs) == n)
+        r.detail_count = len(refs)
         r.health_beats = int(out.get("health_beats_injected") or 0)
+        # ★ A-2 诊断（只加诊断不动逻辑）：落原始 lint 全量，供修连续性前看数据。
+        # D-16：先看是几本书的共性，再定放宽还是收紧。
+        if diag:
+            from storyforge.graph.nodes.detail_planner import load_plan
+            pairs = []
+            for no in range(1, n):
+                try:
+                    a = load_plan(store, bid, no)
+                    b = load_plan(store, bid, no + 1)
+                except Exception:
+                    break
+                pairs.append({
+                    "a": no, "b": no + 1,
+                    "exit_location": a.exit_state.location_name,
+                    "entry_location": b.entry_state.location_name,
+                    "b_is_transition": b.is_transition,
+                    "shared_tokens": _shared_tokens(
+                        a.exit_state.location_name, b.entry_state.location_name),
+                })
+            _write_diag(f"doc/research/_diag_detail_{bid}.json", {
+                "book_id": bid,
+                "lint_issues": out.get("lint_issues") or [],
+                "detail_error": out.get("detail_error") or "",
+                "detail_plans": out.get("detail_plans"),
+                "detail_refs": refs,
+                "expected": n,
+                "adjacent_pairs": pairs,
+                "transition_rate": (
+                    sum(1 for p in pairs if p["b_is_transition"]) / len(pairs)
+                    if pairs else None
+                ),
+            })
         if not r.detail_ok:
+            if out.get("detail_error"):
+                r.failures.append(f"detail:error:{out['detail_error'][:120]}")
             r.failures += [_classify(i) for i in (out.get("lint_issues") or [])]
+            if not r.failures:
+                # lint 为空、error 为空、refs 对不上 —— 未知形状，不得静默
+                r.failures.append(
+                    f"detail:unknown:refs={len(refs)}/{n} "
+                    f"plans={out.get('detail_plans')}"
+                )
     except Exception as exc:  # noqa: BLE001
         r.failures.append(f"detail:exception:{type(exc).__name__}")
 
@@ -231,6 +369,26 @@ def _write_results(results: list[BookResult], out_path: str) -> None:
     )
 
 
+def _write_diag(out_path: str, payload: dict) -> None:
+    """写诊断文件（原始 issues / 产物原文，供修校验器前看数据用，D-16）。
+
+    ★ 只在诊断跑时调用，不进正式结果 json。
+    """
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=1, default=str),
+        encoding="utf-8",
+    )
+
+
+def _shared_tokens(a: str, b: str) -> list[str]:
+    """两串按字符切分的共享 Token（A-2 诊断用：看假阳性是否有公共子串）。"""
+    sa = {c for c in (a or "") if c.strip()}
+    sb = {c for c in (b or "") if c.strip()}
+    return sorted(sa & sb)
+
+
 def _mark(ok: bool) -> str:
     return "OK  " if ok else "FAIL"
 
@@ -240,6 +398,9 @@ async def main() -> int:
     ap.add_argument("--books", nargs="*", type=int, default=None)
     ap.add_argument("--out", default="doc/research/multibook-e2e.json")
     ap.add_argument("--clean", action="store_true", help="跑之前清掉这些书的产物")
+    ap.add_argument("--diag", action="store_true",
+                    help="落诊断文件 doc/research/_diag_{volume,skeleton,detail}_{bid}.json"
+                         "（原始 issues / 产物原文，供修校验器前看数据，D-16）")
     args = ap.parse_args()
 
     specs = [b for b in BOOKS if args.books is None or b["id"] in args.books]
@@ -258,14 +419,15 @@ async def main() -> int:
     ))
 
     results: list[BookResult] = []
-    for spec in specs:
+    specs = list(specs)
+    for idx, spec in enumerate(specs):
         print(f"\n{'=' * 74}")
         print(f"书 {spec['id']}｜{spec['genre']}｜{spec['book_chapters']} 章"
               f"｜先写 {spec['detail_chapters']} 章")
         print(f"  {spec['topic'][:64]}")
         print("-" * 74)
         try:
-            r = await run_one(client, store, spec)
+            r = await run_one(client, store, spec, args)
         except Exception as exc:  # noqa: BLE001
             # ★ 单本书的异常绝不能终止整轮 ——
             # 否则第一本崩了，后面五本的数据全都拿不到，

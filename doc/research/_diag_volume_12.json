@@ -1,0 +1,25 @@
+{
+ "book_id": 12,
+ "gate_ok": false,
+ "repair_rounds": 6,
+ "gate_issues": [
+  {
+   "code": "milestones",
+   "message": "第 4 卷存在 30 章的里程碑真空（上限 25）—— 旧项目书 23 实测 202 章真空（3 → 205）",
+   "volume_no": 4,
+   "context": {
+    "max_gap": 30
+   }
+  },
+  {
+   "code": "chapter_distribution",
+   "message": "第 6 卷 110 章，占全书 14%，超出 [15%, 60%]（目标 800 章）—— 占比过小说明本卷撑不起一条完整的升级台阶",
+   "volume_no": 6,
+   "context": {
+    "chapters": 110,
+    "share": 0.138,
+    "target": 800
+   }
+  }
+ ]
+}

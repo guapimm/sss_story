@@ -26,6 +26,7 @@ hang / entities）→ `entity_classify` 空输出 **100%**。
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -107,66 +108,183 @@ class BibleOut(BaseModel):
         """
         return coerce_str_list(v)
 
-    @field_validator("rules")
+    @model_validator(mode="before")
     @classmethod
-    def _rules_not_field_labels(cls, v: list[str]) -> list[str]:
-        """拦住「把**其它字段名当规则写进 rules**」的错位。
+    def _relocate_misnested_fields(cls, data: Any) -> Any:
+        """把**塞错字段**的内容自动搬回它该在的顶层字段。
 
-        ## 实测（小米 MiMo，第 1 次尝试即出现）
+        ## 实测（小米 MiMo，间歇性出现）
 
-        模型把本该是顶层字段的内容**塞进了 `rules` 数组**：
+        模型有时把本该是顶层字段的内容**塞进 `rules` 数组**：
 
             "rules": [
               ...真实的规则...,
               "era：永恒黄昏时代。档案馆内无自然光照变化…",
-              "tone：冷峻、压抑、充满未知威胁的悬疑基调…",
-              "terms： ["
+              "tone：冷峻、压抑、充满未知威胁的悬疑基调…"
             ]
 
-        结果是 `era` / `tone` / `terms` 三个字段**全为空**，
-        而 `rules` 里混进了三段非规则内容。
+        后果是 `era` / `tone` / `terms` **三个顶层字段全为空**。
 
-        ⚠️ schema 层看不出来：`rules` 是 `list[str]`，而 `"era：..."` 确实是
-        一个合法字符串。这类**结构错位**只能靠内容特征识别。
+        ## 为什么改成"自动归位"而不是"报错重试"
 
-        判据：条目以 `<已知字段名>：` 开头。用**字段名清单**而不是模糊匹配 ——
-        只拦确定的错位，不误伤真规则（真规则不会以 "era：" 开头）。
+        原先的实现（`@field_validator("rules")` 抛 ValueError）会在这种情况下
+        拒绝整份输出 → 三次修复重试 → 若模型仍这么写就**整本书的圣经生成失败**。
+
+        实测这是**间歇性**的：同一本书连续 3 次调用全部正常通过，
+        但多书测试那一轮恰好撞上，`bible:misnest` 直接卡死整条链路。
+
+        「间歇性结构错位」不该靠重试硬扛 —— 与本文件对 `terms` / `rules`
+        形状漂移的处理原则一致：**信息不丢就归位，而不是拒绝**。
+        （对输入宽容、对输出严格：归位后仍走同一套校验器。）
+
+        ## 归位规则（只认确定的前缀，不猜）
+
+        条目形如 `<字段名>：<内容>` / `<字段名>: <内容>`，且字段名在本模型的
+        已知字段集合内 → 摘出来放回对应字段，并从 `rules` 移除。
+
+        - `era` / `tone`（标量）：内容是字符串 → 直接赋值
+        - `terms`（数组）：内容是数组或「说法——含义」串 → 逐条拆开
+          （实测模型会写成 `"terms： ["` 这种被截断的样子，那种残缺条目**丢弃**）
+
+        字段名与形状都取自 `_BIBLE_RELOCATABLE` —— **单一来源**，
+        避免"改了集合忘了改分支"这类漂移。
         """
-        known = {
-            "title", "worldview", "power_system", "rules", "era", "tone", "terms",
-        }
-        bad = [
-            r for r in v
-            if (head := str(r).split("：", 1)[0].split(":", 1)[0].strip().lower())
-            in known
-        ]
-        if bad:
-            raise ValueError(
-                f"rules 里有 {len(bad)} 条是**其他字段的内容**（以字段名开头）："
-                f"{bad[:2]} —— 请把这些内容放回对应的顶层字段"
-                f"（era / tone / terms），rules 只放世界法则"
-            )
-        return v
+        if not isinstance(data, dict):
+            return data
+        rules = data.get("rules")
+        if not isinstance(rules, list) or not rules:
+            return data
+
+        # 目标字段 → 收集到的内容
+        relocated: dict[str, list[str]] = {}
+        kept: list[Any] = []
+        for item in rules:
+            head, sep, tail = _split_field_label(item)
+            if sep and head in _BIBLE_RELOCATABLE:
+                relocated.setdefault(head, []).append(tail)
+            else:
+                kept.append(item)
+
+        if not relocated:
+            return data
+
+        d = dict(data)
+        d["rules"] = kept
+        for field, values in relocated.items():
+            if _BIBLE_RELOCATABLE[field] == "list":
+                # terms 可能是数组、多行、或「说法——含义」串
+                if d.get(field):
+                    continue
+                items: list[str] = []
+                for v in values:
+                    items.extend(_split_terms_text(v))
+                if items:
+                    d[field] = items
+                continue
+            # 标量：只在顶层字段为空时归位 —— 已有内容不覆盖（顶层更可信）
+            if (d.get(field) or "").strip():
+                continue
+            joined = " ".join(v for v in values if v).strip()
+            if joined:
+                d[field] = joined
+        return d
 
     @model_validator(mode="after")
-    def _reject_field_misnesting(self) -> BibleOut:
-        """结构自检：内容有没有被塞错字段。
+    def _reject_missing_core_fields(self) -> BibleOut:
+        """结构自检：**核心字段不得为空**。
 
-        与上面的 `rules` 检查互补 —— 光看 `rules` 干净不够，
-        还要确认 `era`/`terms` **真的有内容**（错位后它们会空）。
-        旧项目「缺省即通过」的反面：空字段必须报错。
+        ⚠️ 这里只检查 `era` —— 它是圣经的必需要素（时代与地域），
+        而且错位后必然为空（内容被搬到 `rules` 里去了）。
+
+        **不检查 `terms`**：术语对照是"锦上添花"，缺失只影响用词一致性，
+        不该让整本书的圣经生成失败。`validate_bible` 里有独立的下限检查
+        （`_MIN_TERMS`），那属于**质量闸门**，不是**结构必需**。
+        把两者分开，避免一个可选字段卡死整条链路。
         """
-        missing: list[str] = []
         if not (self.era or "").strip():
-            missing.append("era")
-        if len(self.terms) < 1:
-            missing.append("terms")
-        if missing:
             raise ValueError(
-                f"字段 {missing} 为空 —— 实测模型会把它们的内容写进 rules，"
-                f"导致顶层字段空缺。请确保每个顶层字段都填上内容。"
+                "字段 era 为空 —— 实测模型会把它的内容写进 rules，"
+                "导致顶层字段空缺（已尝试自动归位但未找到内容）。"
+                "请确保 era 填上时代与地域背景。"
             )
         return self
+
+#: 圣经里"可以被误塞进 rules"的顶层字段 → 该字段的形状（`"str"` / `"list"`）。
+#:
+#: ⚠️ 登记条件（两条都要满足），否则宁可不登记：
+#:   1. **确定会错位** —— 实测出现过，或有同源证据；
+#:   2. **能区分"字段标签"与"真规则内容"** —— 见 `_split_field_label`：
+#:      只认「行首恰好是字段名 + 冒号」的形式。
+#:
+#: 为什么不必登记 `title` / `worldview` / `power_system`：
+#: 它们的标签同样是行首字段名，但真规则里出现「世界观：…」的概率远高于
+#: 「era：…」（前者是中文常用词）。**只登记实测过的**，
+#: 是「对输入宽容」与「不猜」之间的分界 —— 猜错会把真规则搬走，比不搬更糟。
+_BIBLE_RELOCATABLE: dict[str, str] = {
+    "era": "str",
+    "tone": "str",
+    "terms": "list",
+}
+
+
+def _split_field_label(item: Any) -> tuple[str, str, str]:
+    """把 `"era：内容"` 拆成 `("era", "：", "内容")`。
+
+    只认**行首就是字段名**的形式（真规则不会以 `era：` 开头）。
+    返回 `(head, sep, tail)`；`sep` 为空表示这不是字段标签。
+
+    ★ 也认 `{"era": "永恒黄昏时代"}` 这种**单键对象** ——
+    实测模型错位时并不总是写成字符串，同一个"塞错字段"的毛病
+    换个形状（对象）就认不出来，等于只修了一半。
+    （单键限制与 `coerce_str_list` 同一原则：键是标签、值是内容。）
+    """
+    if isinstance(item, dict) and len(item) == 1:
+        key, value = next(iter(item.items()))
+        head_clean = str(key).strip().lower()
+        if head_clean in _BIBLE_RELOCATABLE:
+            if isinstance(value, list):
+                return head_clean, "：", "；".join(str(v) for v in value)
+            return head_clean, "：", str(value).strip()
+        return "", "", str(item)
+    s = str(item).strip()
+    for sep in ("：", ":"):
+        head, found, tail = s.partition(sep)
+        if found:
+            head_clean = head.strip().lower()
+            # 字段名不该太长（防把普通句子误判）
+            if len(head_clean) <= 12:
+                return head_clean, found, tail.strip()
+            return "", "", s
+    return "", "", s
+
+
+def _split_terms_text(text: str) -> list[str]:
+    """把 `terms` 的错位内容拆成条目列表。
+
+    实测模型会写出这些形态：
+        · `["值夜人——承担夜间值守的人", "朱批——改判之权"]`  （数组）
+        · `"值夜人——承担夜间值守的人；朱批——改判之权"`      （分号分隔）
+        · `"["`                                              （被截断的残片 → 丢弃）
+    """
+    s = (text or "").strip()
+    if not s:
+        return []
+    # 残片（如被截断的 "["、"{" ）直接丢 —— 留着只会污染术语表
+    if s in ("[", "]", "{", "}", "[ ]", "{}"):
+        return []
+    # 看起来像 JSON 数组：尝试解析
+    if s.startswith("["):
+        try:
+            import json as _json  # noqa: PLC0415
+
+            parsed = _json.loads(s if s.endswith("]") else s + "]")
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except (ValueError, TypeError):
+            pass
+    # 分号 / 换行分隔
+    parts = [p.strip() for p in re.split(r"[；;\n]+", s) if p.strip()]
+    return parts
 
 
 # --------------------------------------------------------------------------- #

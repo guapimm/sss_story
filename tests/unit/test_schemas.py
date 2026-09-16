@@ -470,20 +470,79 @@ def test_milestone_string_form_not_shadowed_by_volume_normalizer() -> None:
     assert [m.chapter_no for m in v.milestones] == [55, 80]
     assert "现实锚点" in v.milestones[0].description
 
-def test_rules_reject_other_field_content() -> None:
+def test_rules_content_misnested_is_relocated_not_rejected() -> None:
     """★ 实测：模型把 `era`/`tone`/`terms` 的内容塞进了 `rules` 数组。
 
     schema 层看不出来（`rules` 是 `list[str]`，`"era：..."` 确实是合法字符串），
     但后果是三个顶层字段**全为空**、rules 里混进非规则内容。
 
     这类**结构错位**只能靠内容特征识别。
+
+    ★★ 为什么是"归位"而不是"拒绝"：实测这是**间歇性**的 ——
+    同一本书连续 3 次调用全部正常，多书测试那一轮恰好撞上。
+    原先"拒绝 + 重试"在撞上时会连续 3 次失败 → **整本书的圣经生成失败**。
+    信息没丢就不该有理由拒绝（与本文件对 `terms`/`rules` 形状漂移的处理同一原则）。
     """
-    with pytest.raises(ValidationError, match="其他字段的内容"):
-        BibleOut(
-            title="t", worldview="w" * 250, power_system="p", era="当代",
-            rules=["规则一：不可违反", "era：永恒黄昏时代", "tone：冷峻压抑"],
-            terms=["占位——非空"],
-        )
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="",
+        rules=["规则一：不可违反", "era：永恒黄昏时代", "tone：冷峻压抑"],
+        terms=["占位——非空"],
+    )
+    # 真规则留下
+    assert b.rules == ["规则一：不可违反"]
+    # 错位内容回到各自的顶层字段
+    assert b.era == "永恒黄昏时代"
+    assert b.tone == "冷峻压抑"
+
+
+def test_relocate_does_not_override_existing_top_level_field() -> None:
+    """顶层字段**已有内容时不覆盖** —— 顶层比 rules 里捡出来的更可信。"""
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="既有的时代",
+        rules=["规则一：不可违反", "era：rules 里的时代"],
+        terms=["占位——非空"],
+    )
+    assert b.era == "既有的时代"
+    assert b.rules == ["规则一：不可违反"]
+
+
+def test_relocate_accepts_dict_shaped_misnesting() -> None:
+    """★ 同一个"塞错字段"的毛病，模型**换个形状**（对象）也得认出来。
+
+    只认字符串形态等于只修了一半 —— 实测模型错位时并不总是写字符串。
+    """
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="",
+        rules=["规则一：不可违反", {"era": "永恒黄昏时代"}],
+        terms=["占位——非空"],
+    )
+    assert b.rules == ["规则一：不可违反"]
+    assert b.era == "永恒黄昏时代"
+
+
+def test_relocate_terms_from_rules() -> None:
+    """`terms` 错位：内容是「说法——含义」串 → 拆成条目。"""
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="当代",
+        rules=["规则一：不可违反", "terms：值夜人——承担夜间值守的人；朱批——改判之权"],
+        terms=[],
+    )
+    assert b.rules == ["规则一：不可违反"]
+    assert b.terms == ["值夜人——承担夜间值守的人", "朱批——改判之权"]
+
+
+def test_relocate_discards_truncated_terms_fragment() -> None:
+    """★ 实测模型会写成 `"terms： ["` 这种被截断的样子 —— 残片丢弃。
+
+    留着残片只会污染术语表，让下游把它当成一条真术语。
+    """
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="当代",
+        rules=["规则一：不可违反", "terms： ["],
+        terms=[],
+    )
+    assert b.rules == ["规则一：不可违反"]
+    assert b.terms == []
 
 
 def test_rules_accept_normal_content() -> None:
@@ -509,12 +568,18 @@ def test_missing_era_is_rejected() -> None:
         )
 
 
-def test_missing_terms_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="terms"):
-        BibleOut(
-            title="t", worldview="w" * 250, power_system="p", era="当代",
-            rules=["规则一：不可违反"],
-        )
+def test_missing_terms_is_tolerated_structurally() -> None:
+    """★ `terms` 缺失**不阻塞结构** —— 它在质量闸门里查，不在这里查。
+
+    为什么分开：术语对照是"锦上添花"，缺失只影响用词一致性，
+    不该让整本书的圣经生成失败。硬要求它会重现"可选字段卡死整条链路"。
+    `validate_bible` 的 `_MIN_TERMS` 才是它该待的地方（质量闸门）。
+    """
+    b = BibleOut(
+        title="t", worldview="w" * 250, power_system="p", era="当代",
+        rules=["规则一：不可违反"],
+    )
+    assert b.terms == []
 
 def test_rules_accepts_object_item_shape() -> None:
     """★ 实测（书 11 第 2 轮）：`rules` 里混进了一个对象，3 次重试全失败。

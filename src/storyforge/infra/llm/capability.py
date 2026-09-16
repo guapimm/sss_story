@@ -121,6 +121,10 @@ class NodeRequirement:
     supports_structured_output: bool = False
     needs_long_output: bool = False
     thinking: ThinkingMode = "allowed"
+    #: 覆盖该模型默认思考档（如 `high`）。`None` = 用模型的
+    #: `default_reasoning_effort`。供"某类节点想多想、某类想少想"时使用，
+    #: 仍走能力声明（toml），不在代码里硬编码档位名。
+    reasoning_effort: str | None = None
     #: 额外约束，用于将来扩展（不参与当前匹配逻辑）
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -270,7 +274,9 @@ class ModelRegistry:
         # （见 doc/research/08-mimo-integration.md 的 A/B 结论），
         # 而默认档在抽取任务上把 91% 的输出预算烧在思考里。
         if model.reasoning_control == "effort":
-            return {"reasoning_effort": model.default_reasoning_effort or "low"}
+            # ★ 节点可在 toml 里覆盖档位（如规划类取 high 多想）；
+            # 未覆盖则用模型的 `default_reasoning_effort`。
+            return {"reasoning_effort": req.reasoning_effort or model.default_reasoning_effort or "low"}
         if model.reasoning_control == "budget":
             return {"enable_thinking": True}
         return {}
@@ -344,6 +350,7 @@ def load_registry(path: Path | None = None) -> ModelRegistry:
             supports_structured_output=bool(requires.get("supports_structured_output", False)),
             needs_long_output=bool(requires.get("needs_long_output", False)),
             thinking=spec.get("thinking", "allowed"),
+            reasoning_effort=spec.get("reasoning_effort"),
         )
 
     return ModelRegistry(

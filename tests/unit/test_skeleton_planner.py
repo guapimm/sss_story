@@ -347,6 +347,62 @@ async def test_build_skeleton_gives_up_after_max_rounds() -> None:
     assert "未通过校验" in (result.error or "")
 
 
+async def test_failed_round_skeleton_is_returned_not_only_persisted() -> None:
+    """★ 失败时也要拿得到**当轮**产物 —— 诊断陷阱回归。
+
+    ## 实测踩到的坑
+
+    `persist_skeleton` 只在**成功时**写盘。于是校验失败后去读
+    `skeleton_ref`，读到的是**上一轮成功跑出来的旧骨架**（或根本没有），
+    而违例消息说的是这一轮的新骨架 —— 两者不是同一份产物。
+
+    后果（真实发生）：诊断书 16 的 `skeleton:new_locations` 时，
+    我拿那份旧骨架逐项复算 `_mentions`，得到"其中一项其实能匹配上"
+    这种**自相矛盾**的结论，差点据此去改一个本来正确的匹配器。
+
+    D-16 要求"判真缺失 vs 措辞未命中"必须基于**当轮产物** ——
+    所以失败轮必须把骨架回传出来。
+    """
+    bad = good_skeleton(factions=["守夜会"]).model_dump_json()
+    client, _ = make_client([bad])
+
+    result = await build_skeleton(
+        client, book_id=1, volume=make_volume(), bible_text="x", max_rounds=1
+    )
+
+    assert result.ok is False
+    # ★ 当轮产物可拿到（旧实现这里恒为 None，只能去读盘读到旧的）
+    assert result.last_skeleton is not None
+    assert result.last_skeleton.factions == ["守夜会"]
+
+
+async def test_success_does_not_carry_failed_round_skeleton() -> None:
+    """成功时 `last_skeleton` 留空 —— 成功路径不该带诊断包袱。"""
+    bad = good_skeleton(factions=["守夜会"]).model_dump_json()
+    good = good_skeleton().model_dump_json()
+    client, _ = make_client([bad, good])
+
+    result = await build_skeleton(
+        client, book_id=1, volume=make_volume(), bible_text="x", max_rounds=2
+    )
+
+    assert result.ok
+    assert result.last_skeleton is None
+
+
+def test_failed_skeleton_key_is_under_debug_not_business_path() -> None:
+    """★ 失败骨架必须落在 `debug/` 下 —— 它**不是业务产物**。
+
+    防的是：某个节点误把它当正常骨架读进来续跑，
+    于是"上一轮失败的东西"变成了"这一轮的输入"。
+    """
+    ref = ArtifactStore.failed_skeleton_key(16, 1)
+    assert ref.key == "books/16/debug/skeleton_failed_v001.json"
+    assert "/debug/" in ref.key
+    # 与业务产物**不是同一个 key**（否则会互相覆盖）
+    assert ref.key != ArtifactStore.skeleton_key(16, 1).key
+
+
 async def test_build_skeleton_records_usage_and_context() -> None:
     client, _ = make_client([good_skeleton().model_dump_json()])
     await build_skeleton(client, book_id=42, volume=make_volume(), bible_text="x")

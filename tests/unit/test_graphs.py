@@ -400,6 +400,64 @@ async def test_detail_graph_reports_lint_failure(tmp_path) -> None:
     assert deps.store.list_keys("books/1/plans") == [], "磁盘上不得留半成品"
 
 
+class _FailingTransport(ScriptedTransport):
+    """首轮 LLM 即抛异常 —— 复现缺陷1的误报形状（空 lint + 无产物）。"""
+
+    async def __call__(self, *, model, provider, system, user, **params):
+        raise RuntimeError("boom: 模拟首轮 LLM 异常")
+
+
+async def test_detail_graph_llm_failure_reports_error_not_empty_lint(
+    tmp_path,
+) -> None:
+    """★ 缺陷1回归：LLM 首轮异常不得表现为"空 lint 即成功"。
+
+    误报链条：`build_detail_batch` 首轮异常返回空 lint →
+    图层若丢弃 `result.error`，调用方只凭空 lint 会误判成功。
+    图必须带出 `detail_error`，且不得有 `detail_refs`。
+    """
+    t = _FailingTransport({})
+    client = LLMClient(
+        t,
+        config=ClientConfig(max_attempts=1, backoff_base_s=0.0, structured_retries=0),
+        idempotency=MemoryIdempotencyStore(),
+    )
+    deps = GraphDeps(client=client, store=ArtifactStore(tmp_path))
+    persist_series_plan(deps.store, series_plan())
+    deps.store.write_text("books/1/bible.md", bible_to_markdown(bible()))
+
+    graph = build_detail_batch_graph(deps)
+    out = await graph.ainvoke(
+        {"book_id": 1, "current_volume": 1, "batch_start": 1, "batch_end": 3,
+         "refs": {"bible_ref": "books/1/bible.md"}},
+        thread_config("b1:detail:llm-fail"),
+    )
+    assert out["lint_issues"] == [], "首轮异常时 lint 为空（误报的形状）"
+    assert out.get("detail_error"), "error 必须进 state，不得丢弃"
+    assert "调用失败" in out["detail_error"]
+    assert not out.get("detail_refs"), "失败批次不得有产物引用"
+    assert out.get("detail_plans") == 0
+    assert deps.store.list_keys("books/1/plans") == [], "磁盘上不得留半成品"
+
+
+async def test_detail_graph_success_carries_empty_error(tmp_path) -> None:
+    """★ 成功路径带空 `detail_error` / 对上的 `detail_plans`（三条件判定的依据）。"""
+    deps, _ = make_deps(tmp_path, {"detail": detail_out(3).model_dump_json()})
+    persist_series_plan(deps.store, series_plan())
+    deps.store.write_text("books/1/bible.md", bible_to_markdown(bible()))
+
+    graph = build_detail_batch_graph(deps)
+    out = await graph.ainvoke(
+        {"book_id": 1, "current_volume": 1, "batch_start": 1, "batch_end": 3,
+         "refs": {"bible_ref": "books/1/bible.md"}},
+        thread_config("b1:detail:v1:1-3-ok"),
+    )
+    assert out["lint_issues"] == []
+    assert out.get("detail_error") == ""
+    assert out.get("detail_plans") == 3
+    assert len(out["detail_refs"]) == 3
+
+
 async def test_state_carries_only_refs_not_text(tmp_path) -> None:
     """★ 图输出里只有 ref 与小标量 —— 不含正文/圣经原文。
 

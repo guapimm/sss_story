@@ -119,32 +119,37 @@ pricing = { cached_input = 0.01, input = 0.30, output = 1.20 }
 [nodes.chapter_writer]
 tier = "balanced"
 requires = { supports_structured_output = false, needs_long_output = true }
-thinking = "allowed"           # 正文质量优先（实测 low 档质量不低于默认档）
+thinking = "allowed"           # 正文质量优先
+reasoning_effort = "high"      # ★ 2026-09-14 用户确认：MiMo 思考取最高档（A/B 实测 high 可用）
 
 [nodes.bible_architect]
 tier = "balanced"
 requires = { supports_structured_output = true }
 thinking = "allowed"           # 世界观构建需要推理
+reasoning_effort = "high"
 
 [nodes.volume_planner]
 tier = "balanced"
 requires = { supports_structured_output = true }
 thinking = "allowed"
+reasoning_effort = "high"
 
 [nodes.skeleton_planner]
 tier = "balanced"
 requires = { supports_structured_output = true }
 thinking = "allowed"
+reasoning_effort = "high"
 
 [nodes.detail_planner]
 tier = "balanced"
 requires = { supports_structured_output = true }
 thinking = "allowed"
+reasoning_effort = "high"
 
 [nodes.scene_extractor]
 tier = "balanced"
 requires = { supports_structured_output = true }
-thinking = "minimize"          # ★ 实测无法真关，取最低档
+thinking = "minimize"          # ★ 实测无法真关，取最低档（保持 low，防截断）
 
 [nodes.entity_resolver]
 tier = "balanced"
@@ -160,11 +165,13 @@ thinking = "minimize"
 tier = "balanced"
 requires = { supports_structured_output = true }
 thinking = "allowed"
+reasoning_effort = "high"
 
 [nodes.targeted_reviser]
 tier = "balanced"
 requires = { supports_structured_output = false }
 thinking = "allowed"
+reasoning_effort = "high"
 
 # 以下为**零 LLM** 节点，仅登记以示不存在模型依赖（防误加 LLM 调用）
 # scorecard_engine / health_scheduler / continuity_checker / structure_gate

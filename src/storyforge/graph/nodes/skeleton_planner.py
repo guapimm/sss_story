@@ -117,6 +117,20 @@ class SkeletonResult:
     llm_calls: int = 0
     ok: bool = False
     error: str | None = None
+    #: ★ 最后一轮**未通过校验**的骨架原文（失败时才有值，成功时为 None）。
+    #:
+    #: ## 为什么必须回传它（实测踩到的诊断陷阱）
+    #:
+    #: `persist_skeleton` **只在成功时**写盘。于是失败后去读产物文件，
+    #: 读到的是**上一轮成功跑出来的旧骨架**（或别的书留下的），
+    #: 而违例消息说的是这一轮的新骨架 —— 两者根本不是同一份产物。
+    #:
+    #: 实测后果：诊断书 16 的 `skeleton:new_locations` 时，我拿旧骨架
+    #: 逐项复算 `_mentions`，得到"其中一项其实是能匹配上的"这种**自相矛盾**
+    #: 的结论，差点据此去改一个**本来正确**的匹配器。
+    #: D-16 要求"判真缺失 vs 措辞未命中"必须基于**当轮产物**，
+    #: 读陈旧文件会让这个判断整体失效。
+    last_skeleton: SkeletonOut | None = None
 
 
 #: 判定「骨架是否落实了台阶的某一项」时，忽略这些字符。
@@ -437,6 +451,7 @@ async def build_skeleton(
                       idempotency_key=idempotency_key)
     calls = 0
     last: list[str] = []
+    last_sk: SkeletonOut | None = None
 
     for attempt in range(max_rounds + 1):
         user = _skeleton_user_prompt(
@@ -459,6 +474,7 @@ async def build_skeleton(
             return SkeletonResult(
                 skeleton=None, skeleton_ref="", violations=last,
                 llm_calls=calls, ok=False, error=f"骨架生成调用失败：{exc}",
+                last_skeleton=last_sk,
             )
 
         last = validate_skeleton(sk, volume)
@@ -467,6 +483,8 @@ async def build_skeleton(
                 skeleton=sk, skeleton_ref="", violations=[],
                 llm_calls=calls, ok=True,
             )
+        # ★ 记下**这一轮**的产物 —— 失败后读盘只会读到旧的（见字段注释）
+        last_sk = sk
         logger.info("skeleton validation failed (round %d): %s", attempt + 1, last)
         if attempt >= max_rounds:
             break
@@ -475,6 +493,7 @@ async def build_skeleton(
         skeleton=None, skeleton_ref="", violations=last,
         llm_calls=calls, ok=False,
         error=f"骨架在 {max_rounds + 1} 次尝试后仍未通过校验",
+        last_skeleton=last_sk,
     )
 
 

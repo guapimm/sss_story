@@ -104,6 +104,23 @@ class ArtifactStore:
         return ArtifactRef(f"books/{book_id}/skeleton/v{volume_no:03d}.json")
 
     @staticmethod
+    def failed_skeleton_key(book_id: int, volume_no: int) -> ArtifactRef:
+        """**未通过校验**的骨架原文（诊断用，不参与业务读取）。
+
+        ## 为什么需要单独一个文件
+
+        `skeleton_key` 只在**成功时**写。失败后去读它，读到的是上一轮
+        成功跑出来的旧骨架（或根本没有）—— 而违例消息说的是这一轮的新骨架。
+        实测据此复算 `_mentions` 得到过**自相矛盾**的结论，差点去改一个
+        本来正确的匹配器。
+
+        D-16 要求"真缺失 vs 措辞未命中"必须基于**当轮产物**，
+        所以失败的那一轮必须落盘。放在 `debug/` 下：
+        它**不是业务产物**，任何节点都不会读它来续跑。
+        """
+        return ArtifactRef(f"books/{book_id}/debug/skeleton_failed_v{volume_no:03d}.json")
+
+    @staticmethod
     def review_key(book_id: int, global_no: int) -> ArtifactRef:
         return ArtifactRef(f"books/{book_id}/reviews/{global_no:05d}.json")
 

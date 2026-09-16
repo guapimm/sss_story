@@ -177,6 +177,10 @@ def build_volume_plan_graph(deps: GraphDeps) -> CompiledStateGraph:
             idempotency_key=f"volume_plan:{book_id}",
         )
         if not result.ok or result.plan is None:
+            logger.warning(
+                "volume plan failed: book=%d error=%s gate=%s",
+                book_id, result.error, result.gate.summary(),
+            )
             return {
                 "gate_ok": False,
                 "gate_issues": result.gate.issues_to_state(),
@@ -235,7 +239,23 @@ def build_skeleton_graph(deps: GraphDeps) -> CompiledStateGraph:
             idempotency_key=f"skeleton:{book_id}:v{volume_no}",
         )
         if not result.ok or result.skeleton is None:
-            return {"violations": result.violations or [result.error or "未知失败"]}
+            logger.warning(
+                "skeleton failed: book=%d volume=%d error=%s violations=%s",
+                book_id, volume_no, result.error,
+                (result.violations or [result.error or "未知失败"])[:10],
+            )
+            out_fail: dict[str, Any] = {
+                "violations": result.violations or [result.error or "未知失败"],
+            }
+            # ★ 把**当轮**未通过的骨架落盘（失败时不写 skeleton_ref，
+            #   读它只会读到旧的）。诊断要基于当轮产物，D-16。
+            if result.last_skeleton is not None:
+                ref_fail = deps.store.write_json(
+                    ArtifactStore.failed_skeleton_key(book_id, volume_no),
+                    result.last_skeleton.model_dump(),
+                )
+                out_fail["last_skeleton_ref"] = ref_fail.key
+            return out_fail
         ref = persist_skeleton(deps.store, book_id, volume_no, result.skeleton)
         out: dict[str, Any] = {
             "violations": [],
@@ -294,12 +314,23 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
         if not result.ok:
             # ★ 失败批次**不落盘**：半成品落盘会被下游当成已就绪
             # （旧项目"写出的信号无读者"与"缺省即通过"的共同形态）
+            # ★ 缺陷1修复：error 必须进 state（`detail_error`），否则调用方
+            # 无法区分"真成功"与"首轮 LLM 异常导致的空 lint"（误报成功）。
+            logger.warning(
+                "detail batch failed: book=%d volume=%d batch=%d~%d "
+                "error=%s lint_chapters=%s plans=%d",
+                book_id, volume_no, int(state["batch_start"]),
+                int(state["batch_end"]), result.error,
+                sorted(result.lint_issues), len(result.plans),
+            )
             return {
                 "lint_issues": [
                     f"第{n}章：{i}"
                     for n, issues in sorted(result.lint_issues.items())
                     for i in issues
                 ],
+                "detail_error": result.error or "",
+                "detail_plans": len(result.plans),
             }
         new_refs = [
             persist_plan(deps.store, book_id, result.plans[n])
@@ -309,6 +340,8 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
             "lint_issues": [],
             "detail_refs": new_refs,
             "health_beats_injected": result.health_beats_injected,
+            "detail_error": "",
+            "detail_plans": len(result.plans),
         }
         # ★ C-3：**第一章**细纲就绪即触发（不是首批全部完成）——
         # 这样正文可以立刻开工，与后续细纲并行（不变量 2）

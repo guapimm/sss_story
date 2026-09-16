@@ -123,6 +123,15 @@ class SkeletonState(BookState, total=False):
     #: 骨架产物引用
     skeleton_ref: str
     violations: list[str]
+    #: ★ 最后一轮未通过校验的骨架**引用**（失败时才有值）。
+    #:
+    #: 为什么放进 state：`persist_skeleton` 只在成功时写盘，失败后
+    #: 读 `skeleton_ref` 得到的是**上一轮的旧骨架** —— 用它做"真缺失 vs
+    #: 措辞未命中"的判断会得出自相矛盾的结论（实测踩到）。
+    #:
+    #: ⚠️ 存 `*_ref` 而不是原文：规则 5 禁止 State 含大文本
+    #: （LangGraph checkpoint 膨胀，实测 200 轮 5.3 GB）。
+    last_skeleton_ref: str
     #: 待人工确认（C-2 骨架首批）
     awaiting_confirm: str
 
@@ -143,6 +152,12 @@ class DetailState(BookState, total=False):
     #: 本批注入的伤势节拍数（供观测）
     health_beats_injected: int
     lint_issues: list[str]
+    #: 细纲失败原因（小标量诊断，非产物；成功时为空串）
+    #: ★ 缺陷1修复：失败分支的 error 必须进 state，否则调用方无法区分
+    #: “真成功”与“首轮 LLM 异常导致的空 lint”（空 lint 即误报成功）
+    detail_error: str
+    #: 本批内存中产出的计划数（小标量诊断；失败清空时为 0）
+    detail_plans: int
     awaiting_confirm: str
 
 

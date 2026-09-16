@@ -1,0 +1,10 @@
+{
+ "book_id": 16,
+ "lint_issues": [],
+ "detail_error": "细纲生成调用失败：节点 detail_planner 调用失败（3 次尝试）：",
+ "detail_plans": 0,
+ "detail_refs": [],
+ "expected": 15,
+ "adjacent_pairs": [],
+ "transition_rate": null
+}

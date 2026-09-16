@@ -477,12 +477,20 @@ async def _run_plan(args: argparse.Namespace) -> int:
          "refs": {"bible_ref": bible_ref}},
         thread_config(f"b{book_id}:detail:v{args.volume}:1-{end}"),
     )
-    if out.get("lint_issues"):
+    # ★ 缺陷1修复：与 `multibook_e2e.py` 同口径 —— 空 lint 不等于成功，
+    # 必须同时无 error 且产物数量对上（防两处判定漂移，D-15）。
+    detail_refs = out.get("detail_refs") or []
+    detail_failed = (bool(out.get("lint_issues"))
+                     or bool(out.get("detail_error") or "")
+                     or len(detail_refs) != end)
+    if detail_failed:
+        if out.get("detail_error"):
+            print(f"细纲生成失败：{out['detail_error']}", file=sys.stderr)
         print("细纲未通过 lint：", file=sys.stderr)
-        for i in out["lint_issues"][:20]:
+        for i in (out.get("lint_issues") or [])[:20]:
             print(f"  - {i}", file=sys.stderr)
         return 1
-    print(f"      → {len(out['detail_refs'])} 章细纲已落盘，"
+    print(f"      → {len(detail_refs)} 章细纲已落盘，"
           f"注入伤势节拍 {out['health_beats_injected']} 条")
     if out.get("awaiting_confirm"):
         print(f"\n⚠️  到达人工确认点：{out['awaiting_confirm']}")
