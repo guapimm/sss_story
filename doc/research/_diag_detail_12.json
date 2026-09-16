@@ -1,0 +1,67 @@
+{
+ "book_id": 12,
+ "lint_issues": [
+  "第3章：地点跳变：本章结束于「秦牧的柴房」，下一章开始于「杂役坊柴房区」（须写出可叙述的过渡与动机，否则就是硬切）",
+  "第4章：地点跳变：本章结束于「秦牧的柴房」，下一章开始于「青阳宗外门废料处理池」（须写出可叙述的过渡与动机，否则就是硬切）"
+ ],
+ "detail_error": "细纲在 3 次尝试后仍未通过 lint（2 章有问题）",
+ "detail_plans": 0,
+ "detail_refs": [],
+ "expected": 20,
+ "batch_size": 5,
+ "last_plans_ref": "books/12/debug/plans_failed_00001-00005.json",
+ "adjacent_pairs": [
+  {
+   "a": 1,
+   "b": 2,
+   "exit_location": "秦牧的柴房",
+   "entry_location": "秦牧的柴房",
+   "b_is_transition": false,
+   "b_beat_type": "normal",
+   "shared_tokens": [
+    "房",
+    "柴",
+    "牧",
+    "的",
+    "秦"
+   ]
+  },
+  {
+   "a": 2,
+   "b": 3,
+   "exit_location": "秦牧的柴房",
+   "entry_location": "杂役坊柴房区",
+   "b_is_transition": false,
+   "b_beat_type": "turning",
+   "shared_tokens": [
+    "房",
+    "柴"
+   ]
+  },
+  {
+   "a": 3,
+   "b": 4,
+   "exit_location": "秦牧的柴房",
+   "entry_location": "青阳宗外门废料处理池",
+   "b_is_transition": false,
+   "b_beat_type": "normal",
+   "shared_tokens": []
+  },
+  {
+   "a": 4,
+   "b": 5,
+   "exit_location": "秦牧的柴房",
+   "entry_location": "秦牧的柴房",
+   "b_is_transition": false,
+   "b_beat_type": "climax",
+   "shared_tokens": [
+    "房",
+    "柴",
+    "牧",
+    "的",
+    "秦"
+   ]
+  }
+ ],
+ "transition_rate": 0.0
+}

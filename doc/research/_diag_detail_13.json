@@ -1,11 +1,9 @@
 {
  "book_id": 13,
  "lint_issues": [
-  "第7章：地点跳变：本章结束于「林知许的律所办公室」，下一章开始于「市立医院急诊科」（须写出可叙述的过渡与动机，否则就是硬切）",
-  "第9章：地点跳变：本章结束于「顾晏的公寓 / 林知许的律所办公室」，下一章开始于「法院调解中心」（须写出可叙述的过渡与动机，否则就是硬切）",
-  "第10章：地点跳变：本章结束于「法院附近的咖啡店」，下一章开始于「多场景（市立医院急诊 / 林知许公寓）」（须写出可叙述的过渡与动机，否则就是硬切）"
+  "第9章：地点跳变：本章结束于「仁华医院为王女士安排的临时安全病房」，下一章开始于「仁华医院为王女士安排的临时安全病房外」（须写出可叙述的过渡与动机，否则就是硬切）"
  ],
- "detail_error": "细纲在 3 次尝试后仍未通过 lint（3 章有问题）",
+ "detail_error": "细纲在 3 次尝试后仍未通过 lint（1 章有问题）",
  "detail_plans": 5,
  "detail_refs": [
   "books/13/plans/00001.json",
@@ -21,42 +19,81 @@
   {
    "a": 6,
    "b": 7,
-   "exit_location": "林知许的律所办公室",
-   "entry_location": "市立医院急诊科",
+   "exit_location": "仁华医院大门外",
+   "entry_location": "仁华医院大门外",
    "b_is_transition": false,
-   "b_beat_type": "normal",
-   "shared_tokens": []
+   "b_beat_type": "turning",
+   "shared_tokens": [
+    "仁",
+    "医",
+    "华",
+    "外",
+    "大",
+    "门",
+    "院"
+   ]
   },
   {
    "a": 7,
    "b": 8,
-   "exit_location": "市立医院急诊科医生办公室",
-   "entry_location": "林知许的律所办公室",
+   "exit_location": "林薇诊所外的街道",
+   "entry_location": "林薇诊所外的街道",
    "b_is_transition": true,
    "b_beat_type": "normal",
    "shared_tokens": [
-    "公",
-    "办",
-    "室"
+    "外",
+    "所",
+    "林",
+    "的",
+    "薇",
+    "街",
+    "诊",
+    "道"
    ]
   },
   {
    "a": 8,
    "b": 9,
-   "exit_location": "顾晏的公寓 / 林知许的律所办公室",
-   "entry_location": "法院调解中心",
+   "exit_location": "仁华医院为王女士安排的临时安全病房",
+   "entry_location": "仁华医院为王女士安排的临时安全病房外",
    "b_is_transition": false,
-   "b_beat_type": "normal",
-   "shared_tokens": []
+   "b_beat_type": "turning",
+   "shared_tokens": [
+    "临",
+    "为",
+    "仁",
+    "全",
+    "医",
+    "华",
+    "士",
+    "女",
+    "安",
+    "房",
+    "排",
+    "时",
+    "王",
+    "病",
+    "的",
+    "院"
+   ]
   },
   {
    "a": 9,
    "b": 10,
-   "exit_location": "法院附近的咖啡店",
-   "entry_location": "多场景（市立医院急诊 / 林知许公寓）",
+   "exit_location": "仁华医院员工咖啡厅外",
+   "entry_location": "仁华医院员工咖啡厅外",
    "b_is_transition": false,
-   "b_beat_type": "turning",
+   "b_beat_type": "emotion",
    "shared_tokens": [
+    "仁",
+    "医",
+    "华",
+    "厅",
+    "员",
+    "咖",
+    "啡",
+    "外",
+    "工",
     "院"
    ]
   }
