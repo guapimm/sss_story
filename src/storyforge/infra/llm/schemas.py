@@ -569,8 +569,12 @@ class ChapterPlanOut(BaseModel):
     )
     is_transition: bool = Field(
         default=False,
-        description="本章是否换场章（换地图/换时间）。"
-        "**规划内的换场是正常的**，不是缺陷（旧项目把换图一律判为加戏）",
+        description="本章是否**换场**（地点或时间发生了推移）。"
+        "换场是**正常**的，不是缺陷（旧项目把换图一律判为加戏）——"
+        "只要下一章的场景拍点写出了到达过程与动机（`why_now`）即可。"
+        "⚠️ 判断口径：**场景（scene）层面**换了地方就要置 true，"
+        "不必等到换城市/换地图。同一栋楼里换房间也算换场。"
+        "若 `beat_type` 填了 `transition`，这里也应为 true",
     )
     scenes: list[SceneBeatOut] = Field(description="分场景拍点（4~8 个）")
     entry_state: WorldStateOut = Field(description="本章开场状态")

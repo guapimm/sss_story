@@ -372,6 +372,83 @@ def test_transition_chapter_may_change_location() -> None:
     assert not any("地点跳变" in i for v in issues.values() for i in v)
 
 
+def test_beat_type_transition_also_exempts() -> None:
+    """★ `beat_type == transition` 是**第二个独立信号**，也必须豁免。
+
+    ## 为什么要有两个信号（缺陷 2 的修法之一）
+
+    原先只有 `is_transition` 一个旗。而 prompt 把它描述成「换**地图**」，
+    模型因此认为"同一栋楼换房间"不算换场 → 不置旗 → 必然报警 →
+    重试仍不置旗 → 3 轮耗尽 → **整批细纲失败**。
+
+    `BeatType.TRANSITION` 本来就是"换场/过渡章"的合法节拍值
+    （`enums.py`），模型可能只填了它而忘了同时置旗。
+    **两个信号任一成立即豁免** —— 这是"对输入宽容"的同一原则。
+    """
+    plans = _plans(2)
+    plans[1].exit_state = WorldStateSnapshot(location_name="林远家", story_time="夜")
+    plans[2].entry_state = WorldStateSnapshot(location_name="林远办公室", story_time="次日")
+    plans[2].is_transition = False              # ★ 故意不置旗
+    plans[2].beat_type = BeatType.TRANSITION    # ★ 只填节拍
+    issues = validate_batch(plans, expected=[1, 2])
+    assert not any("地点跳变" in i for v in issues.values() for i in v), issues
+
+
+def test_same_building_move_still_needs_declaration() -> None:
+    """★ 同一栋楼内移动**也必须声明**换场，否则仍然报警。
+
+    ## 这是修法 C 的核心：**统一了定义，但没有放宽判据**
+
+    prompt 与 schema 现在都明确写着：
+    「场景地点发生推移就要置 true，**同楼换房间也算**」。
+    因此模型有了可执行的规则 —— 它**能**通过，而不是"怎么填都错"。
+
+    实测的两条假阳性正是这一类：
+        档案管理科，档案库房外走廊 → 王队长办公室（同一栋办公楼）
+        林远家 → 林远办公室（上班）
+    它们**应当**被声明为换场；声明了就放过，不声明就报警。
+    """
+    plans = _plans(2)
+    plans[1].exit_state = WorldStateSnapshot(location_name="档案库房外走廊", story_time="夜")
+    plans[2].entry_state = WorldStateSnapshot(location_name="王队长办公室", story_time="夜")
+    plans[2].is_transition = False
+    plans[2].beat_type = BeatType.NORMAL
+    issues = validate_batch(plans, expected=[1, 2])
+    assert any("地点跳变" in i for v in issues.values() for i in v), (
+        "未声明换场时仍须报警 —— 否则校验器等于被关掉了"
+    )
+
+
+def test_prompt_and_schema_agree_on_transition_scope() -> None:
+    """★★ 定义一致性：prompt 与 schema 必须都说「场景层面」的换场。
+
+    ## 防的是什么（缺陷 2 的根因）
+
+    prompt 说「换**地图**」、校验器按**地点名**判 → 模型与校验器
+    说的是两件事 → **模型永远无法通过**。这是"定义冲突"，不是阈值问题。
+
+    本测试锁定两边口径一致。若有人只改一边（比如把 prompt 改回"换地图"），
+    冲突会立刻回来 —— 这个测试会拦住它。
+    """
+    from storyforge.graph.nodes.detail_planner import DETAIL_PLANNER_SYSTEM  # noqa: PLC0415
+    from storyforge.infra.llm.schemas import ChapterPlanOut  # noqa: PLC0415
+
+    schema_desc = ChapterPlanOut.model_fields["is_transition"].description or ""
+
+    # 两边都必须明确"场景层面"（而不是只提"地图"）
+    for label, text in (("prompt", DETAIL_PLANNER_SYSTEM), ("schema", schema_desc)):
+        assert "场景" in text, (
+            f"{label} 未把换场定义在**场景层面** —— "
+            f"只写「换地图」会让模型漏置同楼换房间的旗，"
+            f"而校验器按地点名判 → 定义冲突 → 必然失败"
+        )
+    # prompt 与 schema 都不能再出现"只有换地图才算"的口径
+    assert "换地图" not in DETAIL_PLANNER_SYSTEM.replace(
+        "不必等到换城市/换地图", ""
+    ), "prompt 里仍有「换地图」口径（会与校验器冲突）"
+
+
+
 def test_chapter_with_too_few_scenes_is_reported() -> None:
     plans = _plans(1)
     plans[1].scenes = plans[1].scenes[:2]
