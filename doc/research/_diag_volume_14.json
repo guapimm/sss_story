@@ -1,0 +1,17 @@
+{
+ "book_id": 14,
+ "gate_ok": false,
+ "repair_rounds": 6,
+ "gate_issues": [
+  {
+   "code": "chapter_distribution",
+   "message": "第 1 卷 80 章，占全书 13%，超出 [15%, 60%]（目标 600 章）—— 占比过小说明本卷撑不起一条完整的升级台阶",
+   "volume_no": 1,
+   "context": {
+    "chapters": 80,
+    "share": 0.133,
+    "target": 600
+   }
+  }
+ ]
+}

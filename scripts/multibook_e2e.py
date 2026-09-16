@@ -492,7 +492,17 @@ async def run_one(
 
 
 def _write_results(results: list[BookResult], out_path: str) -> None:
-    """落盘（每本书跑完就写一次，防中途崩掉丢失全部数据）。"""
+    """落盘（每本书跑完就写一次，防中途崩掉丢失全部数据）。
+
+    ## `failures` 的两个视图（避免下游再犯"数次数当成数书数"的错）
+
+    · `failures`      —— 出现次数（含重复，保留原始明细）
+    · `failures_books` —— **去重后的书号**（D-16 判据要用的是这个）
+
+    实测踩到：书 13 有 3 条 continuity 失败，报表显示"3 本"
+    → 被判成「★ 通用缺陷（必须修链路）」，而它其实是**单书特例**。
+    两个视图都给出来，下游想用错都难。
+    """
     all_failures: dict[str, list[int]] = {}
     for r in results:
         for f in r.failures:
@@ -500,9 +510,14 @@ def _write_results(results: list[BookResult], out_path: str) -> None:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
-        json.dumps({"results": [asdict(r) for r in results],
-                    "failures": all_failures},
-                   ensure_ascii=False, indent=1),
+        json.dumps({
+            "results": [asdict(r) for r in results],
+            "failures": all_failures,
+            # ★ D-16 判据用这个（去重后的书数）
+            "failures_books": {
+                k: sorted(set(v)) for k, v in all_failures.items()
+            },
+        }, ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
 
@@ -660,13 +675,25 @@ async def main() -> int:
             all_failures.setdefault(f, []).append(r.book_id)
 
     if all_failures:
-        print("\n失败分类（出现书数 → 判定）：")
+        print("\n失败分类（出现**书数** → 判定）：")
+        print("  ⚠️ D-16 的判据是「**几本书**同类失败」，不是「出现几次」——")
+        print("     一本书内出现 3 次仍然只是 **1 本**（不去重会把单书缺陷")
+        print("     误判成通用缺陷，进而去改一个只对那一本成立的东西）。")
+        print()
         for kind, bids in sorted(all_failures.items(),
-                                 key=lambda kv: -len(kv[1])):
-            verdict = ("★ 通用缺陷（必须修链路）" if len(bids) >= 3
-                       else "单书特例（先记录）" if len(bids) == 1
+                                 key=lambda kv: -len(set(kv[1]))):
+            # ★ 必须先去重再判：书 13 曾因 3 条 continuity 被算成"3 本"
+            #   → 误判为"★ 通用缺陷（必须修链路）"。
+            #   这与 D-16 §2.1 记录的分类错误是同一类：
+            #   **统计口径错了，阈值判定就全错**。
+            n_books = len(set(bids))
+            n_hits = len(bids)
+            verdict = ("★ 通用缺陷（必须修链路）" if n_books >= 3
+                       else "单书特例（先记录）" if n_books == 1
                        else "待观察")
-            print(f"  {kind:<34} {len(bids)} 本 {bids}  {verdict}")
+            extra = f"（共 {n_hits} 处）" if n_hits != n_books else ""
+            print(f"  {kind[:46]:<48} {n_books} 本 "
+                  f"{sorted(set(bids))}{extra}  {verdict}")
     else:
         print("\n全部通过 —— 无失败分类")
 

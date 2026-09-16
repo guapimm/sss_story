@@ -212,14 +212,49 @@ def test_review_score_range_enforced() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_chapter_plan_requires_min_four_scenes() -> None:
-    """细纲要求 4~8 个分场景拍点（继承旧项目已验证格式）。"""
+def test_chapter_plan_does_not_hard_reject_too_few_scenes() -> None:
+    """★ 场景数下限**不在 schema 层**拦 —— 它属于 lint（按章、可增量修）。
+
+    ## 实测踩到（书 11，6 书回归）
+
+    schema 层曾抛 `场景数 3 < 4`。而 **schema 失败 = 整批失败**：
+
+        15 章里只有 2 章是 3 个场景 → **15 章全部作废**（3 次重试全败）
+
+    这是**粒度错误**：`场景数 ≥ 4` 是**单章**质量要求，却放在**批级**把关点上，
+    一章的瑕疵否决了另外 13 章的合格内容。
+
+    正确把关点 `detail_planner.lint_chapter` **已经存在**且能抓到同一问题
+    （实测 `['第1章场景数 3 < 4']`），按章记入 `lint_issues` → 可增量修复。
+
+    > 原则：**结构必需性放 schema，质量偏好放 lint**。
+    > 与 `BibleOut.terms` 那次是同一类修复（可选字段不该卡死整条链路）。
+    """
     scene = {"goal": "g", "obstacle": "o", "outcome": "r", "why_now": "w"}
-    with pytest.raises(ValidationError, match="场景数"):
-        ChapterPlanOut(
-            title="t", plot="p", scenes=[scene] * 3,
-            entry_state={}, exit_state={}, end_hook="h",
-        )
+    # ★ 3 个场景**不再被拒**（交给 lint 按章报告）
+    out = ChapterPlanOut(
+        title="t", plot="p", scenes=[scene] * 3,
+        entry_state={}, exit_state={}, end_hook="h",
+    )
+    assert len(out.scenes) == 3
+
+    # 而 lint 层确实会报告它
+    from storyforge.domain.outline import ChapterPlan, SceneBeat  # noqa: PLC0415
+    from storyforge.graph.nodes.detail_planner import lint_chapter  # noqa: PLC0415
+
+    plan = ChapterPlan(
+        global_no=1, volume_no=1, title="t", plot="p" * 20,
+        scenes=[SceneBeat(seq=i, goal="g", obstacle="o", outcome="r", why_now="w")
+                for i in range(3)],
+    )
+    assert any("场景数" in i for i in lint_chapter(plan)), (
+        "lint 层必须抓到 —— 否则删掉 schema 校验就成了放水"
+    )
+
+
+def test_chapter_plan_accepts_four_scenes() -> None:
+    """4 个场景是正常形态（正向对照，证明上一条不是"什么都收"）。"""
+    scene = {"goal": "g", "obstacle": "o", "outcome": "r", "why_now": "w"}
     ok = ChapterPlanOut(
         title="t", plot="p", scenes=[scene] * 4,
         entry_state={}, exit_state={}, end_hook="h",

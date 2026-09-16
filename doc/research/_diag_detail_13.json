@@ -1,0 +1,65 @@
+{
+ "book_id": 13,
+ "lint_issues": [
+  "第7章：地点跳变：本章结束于「林知许的律所办公室」，下一章开始于「市立医院急诊科」（须写出可叙述的过渡与动机，否则就是硬切）",
+  "第9章：地点跳变：本章结束于「顾晏的公寓 / 林知许的律所办公室」，下一章开始于「法院调解中心」（须写出可叙述的过渡与动机，否则就是硬切）",
+  "第10章：地点跳变：本章结束于「法院附近的咖啡店」，下一章开始于「多场景（市立医院急诊 / 林知许公寓）」（须写出可叙述的过渡与动机，否则就是硬切）"
+ ],
+ "detail_error": "细纲在 3 次尝试后仍未通过 lint（3 章有问题）",
+ "detail_plans": 5,
+ "detail_refs": [
+  "books/13/plans/00001.json",
+  "books/13/plans/00002.json",
+  "books/13/plans/00003.json",
+  "books/13/plans/00004.json",
+  "books/13/plans/00005.json"
+ ],
+ "expected": 20,
+ "batch_size": 5,
+ "last_plans_ref": "books/13/debug/plans_failed_00006-00010.json",
+ "adjacent_pairs": [
+  {
+   "a": 6,
+   "b": 7,
+   "exit_location": "林知许的律所办公室",
+   "entry_location": "市立医院急诊科",
+   "b_is_transition": false,
+   "b_beat_type": "normal",
+   "shared_tokens": []
+  },
+  {
+   "a": 7,
+   "b": 8,
+   "exit_location": "市立医院急诊科医生办公室",
+   "entry_location": "林知许的律所办公室",
+   "b_is_transition": true,
+   "b_beat_type": "normal",
+   "shared_tokens": [
+    "公",
+    "办",
+    "室"
+   ]
+  },
+  {
+   "a": 8,
+   "b": 9,
+   "exit_location": "顾晏的公寓 / 林知许的律所办公室",
+   "entry_location": "法院调解中心",
+   "b_is_transition": false,
+   "b_beat_type": "normal",
+   "shared_tokens": []
+  },
+  {
+   "a": 9,
+   "b": 10,
+   "exit_location": "法院附近的咖啡店",
+   "entry_location": "多场景（市立医院急诊 / 林知许公寓）",
+   "b_is_transition": false,
+   "b_beat_type": "turning",
+   "shared_tokens": [
+    "院"
+   ]
+  }
+ ],
+ "transition_rate": 0.25
+}

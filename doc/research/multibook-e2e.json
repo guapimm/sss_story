@@ -6,33 +6,35 @@
    "topic": "规则怪谈：旧档案馆的值夜人，规则写在手册上，触犯者会被遗忘",
    "bible_ok": true,
    "bible_calls": 0,
-   "volume_ok": false,
-   "volumes": 0,
-   "repair_rounds": 6,
-   "skeleton_ok": false,
+   "volume_ok": true,
+   "volumes": 4,
+   "repair_rounds": 0,
+   "skeleton_ok": true,
    "detail_ok": false,
-   "detail_count": 0,
+   "detail_count": 15,
    "health_beats": 0,
-   "seconds": 203.47483560000546,
+   "seconds": 1425.2372827000218,
    "failures": [
-    "volume:other"
+    "detail:error:细纲生成调用失败：节点 detail_planner 结构化输出校验失败（3 次尝试）：- `chapters.0.scenes`：Value error, 场景数 3 < 4（细纲要求 4~8 个分场景拍点）\n- `chapters.1."
    ]
   },
   {
    "book_id": 12,
    "genre": "xianxia",
    "topic": "仙侠修真：一个灵根尽毁的杂役弟子，靠解读残破功法在宗门夹缝中一步步登顶",
-   "bible_ok": true,
+   "bible_ok": false,
    "bible_calls": 0,
-   "volume_ok": true,
-   "volumes": 5,
+   "volume_ok": false,
+   "volumes": 0,
    "repair_rounds": 0,
-   "skeleton_ok": true,
-   "detail_ok": true,
+   "skeleton_ok": false,
+   "detail_ok": false,
    "detail_count": 0,
    "health_beats": 0,
-   "seconds": 1206.5583738999849,
-   "failures": []
+   "seconds": 82.81703939998988,
+   "failures": [
+    "bible:too_thin"
+   ]
   },
   {
    "book_id": 13,
@@ -41,15 +43,18 @@
    "bible_ok": true,
    "bible_calls": 0,
    "volume_ok": true,
-   "volumes": 3,
+   "volumes": 4,
    "repair_rounds": 0,
-   "skeleton_ok": false,
+   "skeleton_ok": true,
    "detail_ok": false,
-   "detail_count": 0,
+   "detail_count": 5,
    "health_beats": 0,
-   "seconds": 175.99359849997563,
+   "seconds": 629.5620521000237,
    "failures": [
-    "volume:new_locations"
+    "detail:error:细纲在 3 次尝试后仍未通过 lint（3 章有问题）",
+    "detail:continuity",
+    "detail:continuity",
+    "detail:continuity"
    ]
   },
   {
@@ -65,12 +70,9 @@
    "detail_ok": false,
    "detail_count": 0,
    "health_beats": 0,
-   "seconds": 229.09765740000876,
+   "seconds": 231.24214779998874,
    "failures": [
-    "volume:other",
-    "volume:other",
-    "volume:other",
-    "volume:other"
+    "volume:chapter_distribution"
    ]
   },
   {
@@ -80,16 +82,14 @@
    "bible_ok": true,
    "bible_calls": 0,
    "volume_ok": true,
-   "volumes": 2,
+   "volumes": 4,
    "repair_rounds": 0,
-   "skeleton_ok": false,
-   "detail_ok": false,
-   "detail_count": 0,
+   "skeleton_ok": true,
+   "detail_ok": true,
+   "detail_count": 20,
    "health_beats": 0,
-   "seconds": 199.66948760001105,
-   "failures": [
-    "volume:new_locations"
-   ]
+   "seconds": 1102.11418090004,
+   "failures": []
   },
   {
    "book_id": 16,
@@ -97,28 +97,41 @@
    "topic": "现代悬疑：一桩十二年前的旧案重开，唯一的目击者如今是负责此案的警官",
    "bible_ok": true,
    "bible_calls": 0,
-   "volume_ok": true,
-   "volumes": 2,
-   "repair_rounds": 0,
-   "skeleton_ok": true,
-   "detail_ok": true,
+   "volume_ok": false,
+   "volumes": 0,
+   "repair_rounds": 6,
+   "skeleton_ok": false,
+   "detail_ok": false,
    "detail_count": 0,
    "health_beats": 0,
-   "seconds": 1076.6601312999846,
-   "failures": []
+   "seconds": 165.32789230003254,
+   "failures": [
+    "volume:milestones",
+    "volume:milestones"
+   ]
   }
  ],
  "failures": {
-  "volume:other": [
-   11,
-   14,
-   14,
-   14,
+  "detail:error:细纲生成调用失败：节点 detail_planner 结构化输出校验失败（3 次尝试）：- `chapters.0.scenes`：Value error, 场景数 3 < 4（细纲要求 4~8 个分场景拍点）\n- `chapters.1.": [
+   11
+  ],
+  "bible:too_thin": [
+   12
+  ],
+  "detail:error:细纲在 3 次尝试后仍未通过 lint（3 章有问题）": [
+   13
+  ],
+  "detail:continuity": [
+   13,
+   13,
+   13
+  ],
+  "volume:chapter_distribution": [
    14
   ],
-  "volume:new_locations": [
-   13,
-   15
+  "volume:milestones": [
+   16,
+   16
   ]
  }
 }

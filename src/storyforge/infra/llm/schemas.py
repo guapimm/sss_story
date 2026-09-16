@@ -581,12 +581,31 @@ class ChapterPlanOut(BaseModel):
     exit_state: WorldStateOut = Field(description="本章结尾状态（下一章据此开场）")
     end_hook: str = Field(description="章末钩子：本章现场内**悬而未决的事件本身**")
 
-    @field_validator("scenes")
-    @classmethod
-    def _min_scenes(cls, v: list[SceneBeatOut]) -> list[SceneBeatOut]:
-        if len(v) < 4:
-            raise ValueError(f"场景数 {len(v)} < 4（细纲要求 4~8 个分场景拍点）")
-        return v
+    # ⚠️ **刻意不在这里校验场景数下限**（曾经有，已删）。
+    #
+    # ## 为什么删（实测：书 11，6 书回归）
+    #
+    # 原实现 `_min_scenes` 在 schema 层抛错。而 **schema 校验失败 = 整批失败**：
+    #
+    #     15 章里只有 2 章是 3 个场景 → **15 章全部作废**（3 次重试全败）
+    #
+    # 这是**粒度错误**：`场景数 ≥ 4` 是**单章**的质量要求，
+    # 却被放在了**批级**的把关点上 —— 一章的瑕疵否决了另外 13 章的合格内容。
+    #
+    # ## 正确的把关点已经存在
+    #
+    # `detail_planner.lint_chapter` 会查同一条件，并把它记进 `lint_issues`
+    # （**按章**报告、**可增量修复**）。实测确认它确实能抓到：
+    #
+    #     lint_chapter(...) → ['第1章场景数 3 < 4']
+    #
+    # 所以在 schema 层再拦一次是**重复且更粗暴**的把关。
+    #
+    # ## 与旧项目同一病灶
+    #
+    # `BibleOut` 曾因 `terms`（锦上添花字段）硬性非空而让**整本书**的圣经失败；
+    # 那是同一个错误在圣经层的翻版。原则：
+    # **结构必需性放 schema，质量偏好放 lint（按章、可增量修）。**
 
 
 class DetailBatchOut(BaseModel):

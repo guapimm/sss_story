@@ -1,0 +1,28 @@
+{
+ "book_id": 11,
+ "lint_issues": [],
+ "detail_error": "细纲生成调用失败：节点 detail_planner 结构化输出校验失败（3 次尝试）：- `chapters.0.scenes`：Value error, 场景数 3 < 4（细纲要求 4~8 个分场景拍点）\n- `chapters.1.scenes`：Value error, 场景数 3 < 4（细纲要求 4~8 个分场景拍点）\n原始输出前 300 字：{\n  \"chapters\": [\n    {\n      \"title\": \"未标记的档案盒\",\n      \"plot\": \"林远在档案管理员办公室调查异常，发现一个不该存在的未标记档案盒，并在其周围看到了规则被涂改的痕迹。\",\n      \"beat_type\": \"normal\",\n      \"is_transition\": false,\n      \"scenes\": [\n        {\n          \"goal\": \"林远寻找档案管理员消失前可能留下的线索，检查其办公桌及周围区域。\",\n          \"obstacle\": \"办公室环境压抑，钟声刚过，需遵守‘停止",
+ "detail_plans": 15,
+ "detail_refs": [
+  "books/11/plans/00001.json",
+  "books/11/plans/00002.json",
+  "books/11/plans/00003.json",
+  "books/11/plans/00004.json",
+  "books/11/plans/00005.json",
+  "books/11/plans/00006.json",
+  "books/11/plans/00007.json",
+  "books/11/plans/00008.json",
+  "books/11/plans/00009.json",
+  "books/11/plans/00010.json",
+  "books/11/plans/00011.json",
+  "books/11/plans/00012.json",
+  "books/11/plans/00013.json",
+  "books/11/plans/00014.json",
+  "books/11/plans/00015.json"
+ ],
+ "expected": 20,
+ "batch_size": 5,
+ "last_plans_ref": "",
+ "adjacent_pairs": [],
+ "transition_rate": null
+}
