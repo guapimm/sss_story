@@ -12,6 +12,16 @@
     "share": 0.125,
     "target": 400
    }
+  },
+  {
+   "code": "chapter_distribution",
+   "message": "第 6 卷 50 章，占全书 12%，超出 [15%, 60%]（目标 400 章）—— 占比过小说明本卷撑不起一条完整的升级台阶",
+   "volume_no": 6,
+   "context": {
+    "chapters": 50,
+    "share": 0.125,
+    "target": 400
+   }
   }
  ]
 }
