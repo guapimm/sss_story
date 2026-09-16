@@ -50,6 +50,7 @@ from storyforge.graph.graphs.books import (  # noqa: E402
     build_volume_plan_graph,
     thread_config,
 )
+from storyforge.infra.llm.capability import ProviderConfigError  # noqa: E402
 from storyforge.infra.llm.client import ClientConfig, LLMClient  # noqa: E402
 from storyforge.infra.llm.transport import make_transport  # noqa: E402
 from storyforge.infra.storage.artifacts import ArtifactStore  # noqa: E402
@@ -143,6 +144,23 @@ def _classify(text: str) -> str:
         #    新跑出来的书不可能再落到这一类；若又出现了，说明归位漏了某种形状。
         ("其他字段的内容", "bible:misnest"),
         ("字段名开头", "bible:misnest"),
+        # ★ 服务端故障必须与代码缺陷**分开**报。
+        #
+        # 实测：provider 的 `/chat/completions` 整体 500（而 `GET /models` 仍 200），
+        # 于是每一轮 e2e 在**不同阶段**失败（圣经/台阶/骨架/细纲都出现过）。
+        # 若把它归进 `bible:parse` / `volume:unclassified` 这类代码缺陷类别，
+        # 就会误导人去"修"一个没坏的东西 —— 本轮已多次踩到
+        # "看到的失败不是真失败"这一类问题。
+        #
+        # 用裸 httpx 直连确认过：与我们的 transport / 代码无关
+        # （脚本 `scripts/diag_provider_raw.py`）。
+        ("Internal Server Error", "provider:5xx"),
+        ("Error code: 500", "provider:5xx"),
+        ("Error code: 502", "provider:5xx"),
+        ("Error code: 503", "provider:5xx"),
+        ("Error code: 504", "provider:5xx"),
+        ("Connection error", "provider:network"),
+        ("APIConnectionError", "provider:network"),
         ("圣经过薄", "bible:too_thin"),
         ("无法解析", "bible:parse"),
         ("结构闸门", "volume:gate"),
@@ -234,6 +252,18 @@ async def run_one(
         )
         r.bible_ok = bool(out.get("ok"))
         if not r.bible_ok:
+            # ★ 圣经失败必须落**原始 violations**（含完整异常文本）。
+            #   否则只看到分类标签（如 `bible:parse`），不知道到底哪一步坏了 ——
+            #   本轮实测：`bible_calls=0` + `bible:parse` 无法区分
+            #   "模型给了坏 JSON" 还是 "provider 调用就失败了"。
+            if diag:
+                _write_diag(f"doc/research/_diag_bible_{bid}.json", {
+                    "book_id": bid,
+                    "ok": False,
+                    "violations": out.get("violations") or [],
+                    "error": out.get("error") or "",
+                    "llm_calls": out.get("llm_calls"),
+                })
             r.failures += [_classify(v) for v in (out.get("violations") or ["?"])]
             r.seconds = time.monotonic() - t0
             return r
@@ -476,6 +506,28 @@ def _mark(ok: bool) -> str:
     return "OK  " if ok else "FAIL"
 
 
+async def _provider_alive(client: LLMClient) -> tuple[bool, str]:
+    """探测 provider 是否可用（发一次最小请求）。
+
+    返回 `(是否可用, 说明)`。**不重试** —— 目的是尽快判断"现在能不能测"，
+    而不是"能不能熬过去"（后者由真实调用自己的重试负责）。
+    """
+    try:
+        res = await client.complete(
+            node="scene_extractor",          # 抽取类：最省，且已在 toml 声明
+            system="你是助手。",
+            user="回复：OK",
+        )
+        text = (res.text or "").strip()[:30]
+        if not text:
+            return False, "provider 返回了**空输出**（没有任何正文）"
+        return True, f"provider 正常（返回 {text!r}）"
+    except ProviderConfigError as exc:
+        return False, f"节点未在 providers.toml 声明：{exc}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {str(exc)[:220]}"
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--books", nargs="*", type=int, default=None)
@@ -500,6 +552,36 @@ async def main() -> int:
         max_attempts=settings.llm.max_attempts,
         timeout_s=settings.llm.default_timeout_s,
     ))
+
+    # ── ★ 前置健康检查 ──
+    #
+    # ## 为什么必须有这一步（实测的严重教训）
+    #
+    # provider 的 `/chat/completions` 整体 500 时，每一轮 e2e 会在
+    # **不同阶段**失败（圣经 / 台阶 / 骨架 / 细纲都出现过）。
+    # 结果看起来像"链路到处是 bug"，实际全是服务端故障 ——
+    # 很容易误导人去修没坏的东西。
+    #
+    # 健康的 provider 不该被这种事污染结论。因此**先探一次**：
+    #   · 通 → 正常跑
+    #   · 不通 → 明确报"provider 不可用"，**不出结论**（也不写结果文件）
+    #
+    # ⚠️ 用 `scene_extractor`（抽取类，最省）—— 节点必须已在
+    #    providers.toml 声明（D-09 禁止硬编码模型）。
+    health_ok, health_msg = await _provider_alive(client)
+    if not health_ok:
+        print("\n" + "!" * 74)
+        print("provider 不可用，**本次不产出任何结论**")
+        print("!" * 74)
+        print(f"  {health_msg}")
+        print()
+        print("  这不是代码缺陷 —— 请先用下列脚本确认，再等恢复后重跑：")
+        print("    uv run python scripts/diag_provider_health.py   # 采样成功率")
+        print("    uv run python scripts/diag_provider_raw.py      # 裸 httpx 直连")
+        print()
+        print("  若在 provider 故障期间跑出失败报表，会把**服务端故障**"
+              "误记成链路缺陷。")
+        return 2
 
     results: list[BookResult] = []
     specs = list(specs)

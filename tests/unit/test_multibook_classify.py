@@ -223,6 +223,40 @@ def test_gate_without_code_falls_back_to_message() -> None:
     assert got == "volume:gate", got
 
 
+# --------------------------------------------------------------------------- #
+# ★ 服务端故障必须与代码缺陷**分开报**
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("msg", [
+    "模型输出无法解析：节点 bible_architect 调用失败（2 次尝试）："
+    "Error code: 500 - {'error': {'code': '500', 'message': 'Internal Server Error'}}",
+    "Error code: 502 - Bad Gateway",
+    "Error code: 503 - Service Unavailable",
+    "Error code: 504 - Gateway Timeout",
+    "APIConnectionError: Connection error.",
+])
+def test_provider_faults_are_classified_separately(msg: str) -> None:
+    """★★ provider 故障**不得**被归类成代码缺陷。
+
+    ## 实测教训（很严重）
+
+    provider 的 `/chat/completions` 整体 500 时，每一轮 e2e 会在
+    **不同阶段**失败（圣经 / 台阶 / 骨架 / 细纲都出现过）——
+    看起来像"链路到处是 bug"。
+
+    而裸 `httpx` 直连（绕开 langchain 与我们的代码）**同样 500**，
+    同时 `GET /models` 仍返回 200 → 确认是**服务端故障**。
+
+    若把它归进 `bible:parse` / `volume:unclassified` 这类代码缺陷类别，
+    就会误导人去修一个**没坏的东西**。
+    """
+    got = _classify(msg)
+    assert got.startswith("provider:"), (
+        f"服务端故障被误归为代码缺陷：{got!r}\n消息：{msg[:80]}"
+    )
+
+
 def test_empty_and_none_are_safe() -> None:
     assert _classify("") == "other"
     assert _classify(None) == "other"  # type: ignore[arg-type]

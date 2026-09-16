@@ -454,32 +454,21 @@ class LLMClient:
                     model_id=model.id, attempt=attempt,
                     prompt_chars=len(system) + len(user),
                 )
-                self.records.append(
-                    self._record(
-                        ctx, model, provider, CallStatus.TIMEOUT, UsageMetrics(),
-                        started=started, error_type="TimeoutError",
-                        extra={
-                            "finish_reason": None,
-                            "timeout_s": self.config.timeout_s,
-                            "prompt_total_chars": len(system) + len(user),
-                        },
-                    )
+                self._record_failure(
+                    ctx, model, provider, CallStatus.TIMEOUT, started,
+                    error_type="TimeoutError",
+                    extra={"timeout_s": self.config.timeout_s},
+                    prompt_chars=len(system) + len(user),
                 )
                 await self._sleep_backoff(attempt)
                 continue
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
-                status = (
-                    CallStatus.FAILED
-                    if not self._is_rate_limit(exc)
-                    else CallStatus.FAILED
-                )
-                self.records.append(
-                    self._record(
-                        ctx, model, provider, status, UsageMetrics(),
-                        started=started, error_type=type(exc).__name__,
-                        retry_reason="rate_limit" if self._is_rate_limit(exc) else None,
-                    )
+                self._record_failure(
+                    ctx, model, provider, CallStatus.FAILED, started,
+                    error_type=type(exc).__name__,
+                    retry_reason="rate_limit" if self._is_rate_limit(exc) else None,
+                    prompt_chars=len(system) + len(user),
                 )
                 await self._sleep_backoff(attempt)
                 continue
@@ -666,21 +655,45 @@ class LLMClient:
             f"model={model_id} reasoning={reasoning_tokens}）"
         )
 
+    def _record_failure(
+        self,
+        ctx: CallContext,
+        model: ModelCapability,
+        provider: ProviderCapability,
+        status: CallStatus,
+        started: float,
+        *,
+        error_type: str | None,
+        prompt_chars: int,
+        retry_reason: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """记录一次**失败**的调用（超时 / 异常）。
+
+        统一入口的原因：失败分支原先各写各的，有的带 `prompt_total_chars`
+        有的不带 → 记录里出现 `prompt=None`，无法回答"是 prompt 太大被拒"。
+        **失败记录的诊断价值不比成功记录低**（本轮多次归因都靠它）。
+        """
+        self.records.append(
+            self._record(
+                ctx, model, provider, status, UsageMetrics(),
+                started=started, error_type=error_type, retry_reason=retry_reason,
+                extra={
+                    "finish_reason": None,
+                    "prompt_total_chars": prompt_chars,
+                    **(extra or {}),
+                },
+            )
+        )
+
     def _timeout_error(
         self, *, model_id: str, attempt: int, prompt_chars: int
     ) -> LLMError:
         """构造**带上下文**的超时错误。
 
-        ## 为什么不能直接 `last_err = exc`（实测踩到第二次）
-
         `asyncio.wait_for` 抛的 `TimeoutError` **不带任何消息**
-        （实测 `str(exc) == ''`、`args == ()`）。直接赋值会让最终报错变成：
-
-            节点 detail_planner 调用失败（3 次尝试）：        ← 冒号后为空
-
-        完全无法归因 —— 当时只能靠"这轮耗时 1147 秒（平时 263 秒）"去猜。
-        这与空输出分支（`last_err` 为 `None`）是**同一类**缺陷：
-        **报错信息里必须带足以归因的上下文**。
+        （实测 `str(exc) == ''`）→ 直接赋给 `last_err` 会让报错变成
+        「节点 X 调用失败（3 次尝试）：」后面空着，无法归因。
         """
         return LLMError(
             f"请求超时（上限 {self.config.timeout_s}s，"

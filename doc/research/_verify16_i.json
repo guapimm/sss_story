@@ -1,0 +1,27 @@
+{
+ "results": [
+  {
+   "book_id": 16,
+   "genre": "mystery",
+   "topic": "现代悬疑：一桩十二年前的旧案重开，唯一的目击者如今是负责此案的警官",
+   "bible_ok": false,
+   "bible_calls": 0,
+   "volume_ok": false,
+   "volumes": 0,
+   "repair_rounds": 0,
+   "skeleton_ok": false,
+   "detail_ok": false,
+   "detail_count": 0,
+   "health_beats": 0,
+   "seconds": 343.0866230999818,
+   "failures": [
+    "bible:parse"
+   ]
+  }
+ ],
+ "failures": {
+  "bible:parse": [
+   16
+  ]
+ }
+}
