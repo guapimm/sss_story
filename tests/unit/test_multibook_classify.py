@@ -169,6 +169,60 @@ def test_unknown_message_falls_back_to_other() -> None:
     assert _classify("完全无法归类的消息") == "other"
 
 
+# --------------------------------------------------------------------------- #
+# 台阶闸门：必须用结构化的 `code`，不靠 message 措辞猜
+# --------------------------------------------------------------------------- #
+
+
+def test_gate_uses_structured_code_not_message() -> None:
+    """★ 闸门自带权威分类 `code`，**不该**去猜 message 的措辞。
+
+    ## 实测踩到（第三次同类错误）
+
+    `milestones` 闸门的消息是「第 2 卷存在 49 章的里程碑真空（上限 25）」，
+    而关键词表里没有「里程碑」也没有「真空」，
+    于是整条落进 `volume:unclassified` —— 等于**该闸门没有分类**。
+
+    修法不是"再补一个关键词"（那还会漏下一种说法），
+    而是**用结构化字段**：`GateIssue.code` 本来就是 `GateErrorCode` 枚举值。
+    """
+    from storyforge.domain.enums import GateErrorCode  # noqa: PLC0415
+    from scripts.multibook_e2e import _GATE_CODE_LABELS, _classify_gate  # noqa: PLC0415
+
+    # ★ 枚举里**每一个**值都必须有映射（防枚举加了值而映射忘了跟）
+    for code in GateErrorCode:
+        label = _GATE_CODE_LABELS.get(code.value)
+        assert label, f"闸门码 {code.value!r} 没有报表标签（枚举加了值要同步）"
+        assert label.startswith("volume:")
+
+    # 实测那条消息：即使措辞里没有关键词，也必须归类正确
+    got = _classify_gate({
+        "code": "milestones",
+        "message": "第 2 卷存在 49 章的里程碑真空（上限 25）",
+    })
+    assert got == "volume:milestones", got
+
+
+def test_gate_unknown_code_is_exposed_not_disguised() -> None:
+    """★ 未登记的闸门码必须**显式暴露**，不能伪装成已分类。
+
+    若静默归到 `volume:unclassified`，下次加闸门码时会**看不出来**
+    （本轮 `milestones` 就是这样漏掉的）。
+    """
+    from scripts.multibook_e2e import _classify_gate  # noqa: PLC0415
+
+    got = _classify_gate({"code": "brand_new_gate", "message": "任意"})
+    assert got == "volume:code:brand_new_gate", got
+
+
+def test_gate_without_code_falls_back_to_message() -> None:
+    """老产物可能没有 `code` —— 回退到措辞匹配，不崩。"""
+    from scripts.multibook_e2e import _classify_gate  # noqa: PLC0415
+
+    got = _classify_gate({"message": "结构闸门失败"})
+    assert got == "volume:gate", got
+
+
 def test_empty_and_none_are_safe() -> None:
     assert _classify("") == "other"
     assert _classify(None) == "other"  # type: ignore[arg-type]

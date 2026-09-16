@@ -38,6 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from storyforge.config import get_settings, load_dotenv  # noqa: E402
+from storyforge.domain.enums import GateErrorCode  # noqa: E402
 
 load_dotenv()
 
@@ -183,8 +184,42 @@ def _classify(text: str) -> str:
     return "other"
 
 
-async def run_one(client: LLMClient, store: ArtifactStore, spec: dict,
-                  args: argparse.Namespace | None = None) -> BookResult:
+#: 台阶闸门 `code` → 报表标签。
+#:
+#: ★ 为什么不靠 `message` 的关键词猜，也不手写映射表：
+#:
+#: `GateErrorCode` 枚举**已经是权威来源**（闸门自己用的就是它）。
+#: 本轮实测踩到：只传 `message` 去猜 → `milestones` 闸门
+#: （消息「第 2 卷存在 49 章的里程碑真空」）没有对应关键词
+#: → 落进 `volume:unclassified`，等于该闸门**没有分类**。
+#:
+#: 这与本轮另外两处错误同源（`_classify` 排序、e2e 绕过配置）：
+#: **放着结构化事实不用，改用文本启发式**。
+#: 因此这里直接从枚举生成，**枚举加值自动覆盖**，不可能漂移。
+_GATE_CODE_LABELS: dict[str, str] = {
+    code.value: f"volume:{code.value}" for code in GateErrorCode
+}
+
+
+def _classify_gate(issue: dict) -> str:
+    """把一条 `gate_issue` 归类 —— **优先用 `code`**，措辞只作回退。
+
+    `code` 是闸门自己给的权威分类（`GateErrorCode` 枚举）；
+    `message` 是给人看的措辞，靠它做机器分类会在"换了说法"时静默失效。
+    """
+    code = str(issue.get("code") or "").strip()
+    if code in _GATE_CODE_LABELS:
+        return _GATE_CODE_LABELS[code]
+    if code:
+        # 出现了未登记的闸门码 —— 显式暴露，**不要**伪装成已分类
+        return f"volume:code:{code}"
+    return _classify(str(issue.get("message", "")))
+
+
+async def run_one(
+    client: LLMClient, store: ArtifactStore, spec: dict,
+    args: argparse.Namespace | None = None,
+) -> BookResult:
     diag = bool(getattr(args, "diag", False))
     deps = GraphDeps(client=client, store=store)
     r = BookResult(book_id=spec["id"], genre=spec["genre"], topic=spec["topic"])
@@ -230,8 +265,19 @@ async def run_one(client: LLMClient, store: ArtifactStore, spec: dict,
                 "gate_issues": out.get("gate_issues") or [],
             })
         if not r.volume_ok:
-            r.failures += [_classify(str(i.get("message", "")))
-                           for i in (out.get("gate_issues") or [])]
+            # ★ 优先用结构化的 `code`，而不是去猜 message 的措辞。
+            #
+            # ## 实测踩到（第三次同类问题）
+            #
+            # 原先只传 `message`，而 `_classify` 是靠关键词猜的 ——
+            # 于是 `milestones` 闸门（消息是「第 2 卷存在 49 章的里程碑真空」）
+            # 因为没有对应关键词而落进 `volume:unclassified`。
+            #
+            # 但闸门本来就**带着权威的分类字段** `code`（`GateIssue.code`），
+            # 有结构化字段却去猜文本，等于自找分类错误。
+            # （同一类错误：`_classify` 排序问题、e2e 绕过配置 —— 都是
+            #   "放着结构化事实不用，改用文本启发式"。）
+            r.failures += [_classify_gate(i) for i in (out.get("gate_issues") or [])]
             r.seconds = time.monotonic() - t0
             return r
     except Exception as exc:  # noqa: BLE001
@@ -291,23 +337,56 @@ async def run_one(client: LLMClient, store: ArtifactStore, spec: dict,
         return r
 
     # ── ④ 细纲 ──
+    #
+    # ★ 必须按 `pipeline.detail_batch_size` **分批**，与 CLI 同口径。
+    #
+    # ## 实测踩到的口径漂移（本脚本一度比生产更严，反而制造了假失败）
+    #
+    # 原先这里直接 `batch_end = n`（15 章一批），**绕过了配置**。
+    # 而 CLI 用的是 `min(chapters, detail_batch_size)`（5 章一批）。
+    # 后果：配置从 15 改成 5 之后，e2e **仍然超时**，看起来像"改了没用" ——
+    # 实际是 e2e 压根没读那个配置。
+    #
+    # 15 章一批实测需要 ~328s > 300s 超时上限（`scripts/diag_batch_model.py`），
+    # 所以这里的失败是**脚本自造的**，不是链路的缺陷。
     try:
         n = spec["detail_chapters"]
-        out = await build_detail_batch_graph(deps).ainvoke(
-            {"book_id": bid, "current_volume": 1, "batch_start": 1, "batch_end": n,
-             "refs": {"bible_ref": bible_ref}},
-            thread_config(f"b{bid}:detail:v1:1-{n}"),
-        )
-        # ★ 缺陷1修复：空 lint 不等于成功。三条件缺一即失败 ——
-        # 首轮 LLM 异常会返回空 lint（`detail_planner.py`），若只看 lint
-        # 就会误报 `detail_ok=true` 且 `detail_count=0`（book12/16 的形状）。
-        # 磁盘产物以 `detail_refs` 为准（失败分支无此键，`out.get` 天然区分）。
-        refs = out.get("detail_refs") or []
-        r.detail_ok = (not out.get("lint_issues")
-                       and not (out.get("detail_error") or "")
-                       and len(refs) == n)
+        batch_size = get_settings().pipeline.detail_batch_size
+        refs: list[str] = []
+        lint: list[str] = []
+        detail_error = ""
+        beats = 0
+        detail_plans = 0
+        for start in range(1, n + 1, batch_size):
+            end = min(start + batch_size - 1, n)
+            out = await build_detail_batch_graph(deps).ainvoke(
+                {"book_id": bid, "current_volume": 1,
+                 "batch_start": start, "batch_end": end,
+                 "refs": {"bible_ref": bible_ref}},
+                thread_config(f"b{bid}:detail:v1:{start}-{end}"),
+            )
+            # ★ 缺陷1修复：空 lint 不等于成功。三条件缺一即失败 ——
+            # 首轮 LLM 异常会返回空 lint（`detail_planner.py`），若只看 lint
+            # 就会误报 `detail_ok=true` 且 `detail_count=0`（book12/16 的形状）。
+            batch_refs = out.get("detail_refs") or []
+            refs.extend(batch_refs)
+            detail_plans += int(out.get("detail_plans") or 0)
+            beats += int(out.get("health_beats_injected") or 0)
+            if out.get("lint_issues"):
+                lint += list(out["lint_issues"])
+            if out.get("detail_error"):
+                detail_error = str(out["detail_error"])
+                break  # 一批失败即停（后续批次依赖前面，继续没意义）
+            if len(batch_refs) != (end - start + 1):
+                detail_error = (
+                    f"批次 {start}~{end} 产物数不符："
+                    f"{len(batch_refs)}/{end - start + 1}"
+                )
+                break
+
+        r.detail_ok = not lint and not detail_error and len(refs) == n
         r.detail_count = len(refs)
-        r.health_beats = int(out.get("health_beats_injected") or 0)
+        r.health_beats = beats
         # ★ A-2 诊断（只加诊断不动逻辑）：落原始 lint 全量，供修连续性前看数据。
         # D-16：先看是几本书的共性，再定放宽还是收紧。
         if diag:
@@ -329,11 +408,12 @@ async def run_one(client: LLMClient, store: ArtifactStore, spec: dict,
                 })
             _write_diag(f"doc/research/_diag_detail_{bid}.json", {
                 "book_id": bid,
-                "lint_issues": out.get("lint_issues") or [],
-                "detail_error": out.get("detail_error") or "",
-                "detail_plans": out.get("detail_plans"),
+                "lint_issues": lint,
+                "detail_error": detail_error,
+                "detail_plans": detail_plans,
                 "detail_refs": refs,
                 "expected": n,
+                "batch_size": batch_size,
                 "adjacent_pairs": pairs,
                 "transition_rate": (
                     sum(1 for p in pairs if p["b_is_transition"]) / len(pairs)
@@ -341,14 +421,13 @@ async def run_one(client: LLMClient, store: ArtifactStore, spec: dict,
                 ),
             })
         if not r.detail_ok:
-            if out.get("detail_error"):
-                r.failures.append(f"detail:error:{out['detail_error'][:120]}")
-            r.failures += [_classify(i) for i in (out.get("lint_issues") or [])]
+            if detail_error:
+                r.failures.append(f"detail:error:{detail_error[:120]}")
+            r.failures += [_classify(i) for i in lint]
             if not r.failures:
                 # lint 为空、error 为空、refs 对不上 —— 未知形状，不得静默
                 r.failures.append(
-                    f"detail:unknown:refs={len(refs)}/{n} "
-                    f"plans={out.get('detail_plans')}"
+                    f"detail:unknown:refs={len(refs)}/{n} plans={detail_plans}"
                 )
     except Exception as exc:  # noqa: BLE001
         r.failures.append(f"detail:exception:{type(exc).__name__}")

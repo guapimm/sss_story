@@ -1,7 +1,7 @@
 {
  "book_id": 16,
  "lint_issues": [],
- "detail_error": "细纲生成调用失败：节点 detail_planner 调用失败（3 次尝试）：请求超时（上限 300.0s，attempt 3/3，model=mimo-v2.5，prompt 3635 字符）",
+ "detail_error": "细纲生成调用失败：节点 detail_planner 调用失败（3 次尝试）：请求超时（上限 300.0s，attempt 3/3，model=mimo-v2.5，prompt 4270 字符）",
  "detail_plans": 0,
  "detail_refs": [],
  "expected": 15,

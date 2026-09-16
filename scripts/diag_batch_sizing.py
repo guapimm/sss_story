@@ -27,13 +27,18 @@ from storyforge.config import get_settings, load_dotenv  # noqa: E402
 
 load_dotenv()
 
-from storyforge.graph.nodes.detail_planner import build_detail_batch  # noqa: E402
+from storyforge.graph.nodes.detail_planner import (  # noqa: E402
+    build_detail_batch,
+    plan_to_dict,
+)
 from storyforge.infra.llm.client import ClientConfig, LLMClient  # noqa: E402
 from storyforge.infra.llm.transport import make_transport  # noqa: E402
 from storyforge.infra.storage.artifacts import ArtifactStore  # noqa: E402
 
 BID = 16
-BATCHES = (3, 6, 15)
+#: 只测 1 / 3 / 6 章 —— 15 章已知会超时（300s），再测一遍是白烧 token。
+#: 目的是量出**每章成本**，据此反推批次上限。
+BATCHES = (1, 3, 6)
 
 
 async def run_one(store: ArtifactStore, span: int) -> dict:
@@ -57,8 +62,10 @@ async def run_one(store: ArtifactStore, span: int) -> dict:
 
     rec = client.records[0] if client.records else None
     scenes = sum(len(p.scenes) for p in r.plans.values())
+    # ⚠️ 序列化函数在 `detail_planner` 模块里（`ChapterPlan` 本身没有 to_dict）
     chars = sum(
-        len(json.dumps(p.to_dict(), ensure_ascii=False)) for p in r.plans.values()
+        len(json.dumps(plan_to_dict(p), ensure_ascii=False))
+        for p in r.plans.values()
     )
     return {
         "chapters": span,
