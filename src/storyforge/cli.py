@@ -1,7 +1,8 @@
 """命令行入口 —— 一期的唯一操作接口（决策 D-05：不做前端）。
 
-包含 `doctor` 自检命令：检查配置、数据库、外键、LLM 连通性、
-以及**架构不变量**，让"系统是否健康"变成一条命令。
+`doctor` 自检的实现已拆到 `storyforge/doctor.py`（契约规则 10 的 800 行上限；
+拆 `doctor` 而非随便切一刀，依据是职责 —— 它是"体检项集合"，
+与"命令分发"是两件事）。
 """
 
 from __future__ import annotations
@@ -13,138 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from storyforge import __version__
-from storyforge.config import REPO_ROOT, Settings, configure, get_settings, reset_settings
+from storyforge.config import REPO_ROOT, get_settings, reset_settings
+from storyforge.doctor import run_doctor
 
 
 # --------------------------------------------------------------------------- #
 # doctor
 # --------------------------------------------------------------------------- #
-
-
-def _check(name: str, ok: bool, detail: str = "") -> dict[str, Any]:
-    return {"check": name, "ok": ok, "detail": detail}
-
-
-def run_doctor(*, verbose: bool = False) -> tuple[bool, list[dict[str, Any]]]:
-    """自检：配置 / 存储 / 外键 / 能力声明 / 分层纪律。"""
-    results: list[dict[str, Any]] = []
-
-    # 1) 配置加载
-    try:
-        s = get_settings()
-        s.ensure_dirs()
-        results.append(_check("config", True, f"data_dir={s.data_dir}"))
-    except Exception as exc:  # noqa: BLE001
-        results.append(_check("config", False, f"{type(exc).__name__}: {exc}"))
-        return False, results
-
-    # 2) 结构闸门必须启用（旧项目 shadow=true 的教训）
-    results.append(
-        _check(
-            "structure_gate_enabled",
-            s.structure_gate.enabled,
-            "必须 enabled（旧项目 shadow=true 导致 400 章挤第 1 卷）",
-        )
-    )
-
-    # 3) 数据库 + 外键
-    try:
-        from storyforge.infra.storage.db import Database
-
-        db = Database.from_settings(s)
-        db.create_all()
-        fk_on = db.foreign_keys_enabled()
-        results.append(_check("database", True, f"{len(db.list_tables())} tables"))
-        results.append(
-            _check("foreign_keys_forced", fk_on, "SQLite 默认关闭，必须显式开启")
-        )
-        integrity = db.check_integrity()
-        results.append(_check("integrity", integrity == "ok", integrity))
-
-        # 每张从属表必须有 FK
-        root_tables = {"books"}
-        no_fk = [
-            t
-            for t in db.list_tables()
-            if not t.startswith("sqlite_") and t not in root_tables
-            and not db.foreign_key_targets(t)
-        ]
-        results.append(
-            _check("all_tables_have_fk", not no_fk, f"缺 FK: {no_fk}" if no_fk else "ok")
-        )
-    except Exception as exc:  # noqa: BLE001
-        results.append(_check("database", False, f"{type(exc).__name__}: {exc}"))
-
-    # 4) 能力声明与路由
-    try:
-        from storyforge.infra.llm.capability import load_registry
-
-        reg = load_registry()
-        results.append(
-            _check("providers", True, f"{len(reg.models)} models / {len(reg.providers)} providers")
-        )
-        # 抽取类节点必须「尽量不思考」
-        #
-        # ⚠️ 实测：小米 MiMo v2.5 **关不掉思考**（enable_thinking/thinking 都被忽略），
-        # 因此合格形态有三种：模型本身不思考 / 真能关闭 / 取到最低 effort 档。
-        # 这里按「效果」判定，而不是按某个参数名 —— 参数是实现细节。
-        bad: list[str] = []
-        for node in ("scene_extractor", "entity_resolver", "relation_extractor"):
-            try:
-                m, _ = reg.route(node)
-                policy = reg.thinking_policy_for(node, m)
-                if not m.supports_reasoning:
-                    continue
-                if policy.get("enable_thinking") is False:
-                    continue
-                if policy.get("reasoning_effort") in ("minimal", "low"):
-                    continue
-                bad.append(f"{node}->{m.id} policy={policy}")
-            except Exception as exc:  # noqa: BLE001
-                bad.append(f"{node}: {exc}")
-        results.append(
-            _check(
-                "extractor_thinking_minimized",
-                not bad,
-                f"违规: {bad}" if bad
-                else "抽取类节点均已取最低思考档（旧项目 entity_classify 空输出 100%）",
-            )
-        )
-    except Exception as exc:  # noqa: BLE001
-        results.append(_check("providers", False, f"{type(exc).__name__}: {exc}"))
-
-    # 5) API key 是否配置（不打印值）
-    try:
-        from storyforge.infra.llm.capability import load_registry as _lr
-
-        reg = _lr()
-        missing = [
-            p.name for p in reg.providers.values()
-            if p.api_key_env and not p.resolve_api_key()
-        ]
-        results.append(
-            _check(
-                "api_keys",
-                True,  # 缺 key 不算失败：Mock 模式与离线测试不需要
-                f"未配置: {missing}（Mock/离线模式不受影响）" if missing else "已配置",
-            )
-        )
-    except Exception:  # noqa: BLE001
-        pass
-
-    # 6) 分层纪律（AST 快速版）
-    src = REPO_ROOT / "src" / "storyforge"
-    domain_bad: list[str] = []
-    for p in (src / "domain").rglob("*.py"):
-        text = p.read_text(encoding="utf-8")
-        if "import langgraph" in text or "import langchain" in text:
-            domain_bad.append(str(p.relative_to(src)))
-    results.append(
-        _check("domain_is_framework_free", not domain_bad, f"违规: {domain_bad}" if domain_bad else "ok")
-    )
-
-    ok = all(r["ok"] for r in results)
-    return ok, results
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -156,6 +32,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print()
     print(f"doctor: {'PASS' if ok else 'FAIL'}  (storyforge {__version__})")
     return 0 if ok else 1
+
+
 
 
 # --------------------------------------------------------------------------- #
@@ -604,6 +482,73 @@ def cmd_write(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# flows（流派清单 —— learn 的「流派可多选」可视化入口）
+# --------------------------------------------------------------------------- #
+
+
+def cmd_flows(args: argparse.Namespace) -> int:
+    """列出/查看流派卡（**零 LLM、零网络**）。
+
+    ## 为什么要有这个命令（用户要求"全流程可视化，避免黑盒"）
+
+    learn 的目标流程第二步是「选研究主题和小说题材，流派**可多选**」——
+    用户必须先**看到**可选清单与每张卡的内容，才能做选择。
+    否则又是黑盒：系统说"已按悟道流生成"，而用户不知道悟道流是什么。
+
+    两个命名空间（实测两套数据语义不同，见 `modes/flows.py`）：
+      · `tropes`   16 个通用叙事套路（story 用，已被题材引用）
+      · `xianxia`  25 个修仙流派（learn 用，可多选）
+    """
+    from storyforge.modes.flows import NAMESPACES, load_flow, load_namespace
+
+    ns = args.namespace
+    if ns == "all":
+        namespaces = list(NAMESPACES)
+    else:
+        namespaces = [ns]
+
+    for i, name in enumerate(namespaces):
+        if i:
+            print()
+        cards = load_namespace(name)
+        print(f"══ {name} ══  {NAMESPACES.get(name, '')}")
+        if not cards:
+            print("  （目录为空或不存在）")
+            continue
+        print(f"  共 {len(cards)} 个\n")
+        for fid, c in cards.items():
+            # 一行摘要：id / 名 / 卖点
+            hook = c.hook[:44] + ("…" if len(c.hook) > 44 else "")
+            print(f"  {fid:<24} {c.name:<12} {hook}")
+
+    # --detail：打印指定流派的完整卡（供用户确认）
+    if args.detail:
+        print()
+        for fid in args.detail:
+            found = None
+            for name in namespaces:
+                try:
+                    found = load_flow(fid, name)
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+            if found is None:
+                print(f"★ 找不到流派 {fid!r}", file=sys.stderr)
+                return 2
+            print("─" * 76)
+            print(f"【{found.namespace}/{found.id}】")
+            print("─" * 76)
+            print(found.writer_block(include_example=args.with_example))
+            print()
+
+    if not args.detail:
+        print()
+        print("查看某流派完整卡：storyforge flows --detail <id> [--with-example]")
+        print("learn 侧流派可多选：传多个 id 即可（顺序即权重顺序）")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # report（Token 与成本报告）
 # --------------------------------------------------------------------------- #
 
@@ -694,6 +639,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     rp = sub.add_parser("report", help="Token 与成本报告")
     rp.set_defaults(func=cmd_report)
+
+    fl = sub.add_parser(
+        "flows",
+        help="流派清单（learn 的「流派可多选」可视化入口；零 LLM）",
+    )
+    fl.add_argument(
+        "--namespace", "-n", default="all",
+        help="命名空间：all / tropes（16 通用套路）/ xianxia（25 修仙流派）",
+    )
+    fl.add_argument(
+        "--detail", "-d", nargs="+", metavar="ID",
+        help="打印这些流派的完整卡（可多个，learn 侧即多选）",
+    )
+    fl.add_argument(
+        "--with-example", action="store_true",
+        help="完整卡里带上 arc_example（风格示例，规划期用）",
+    )
+    fl.set_defaults(func=cmd_flows)
 
     return p
 

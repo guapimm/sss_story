@@ -32,6 +32,14 @@ story 完整实现 3 个能力；learn 可构造但调用即抛
 `CapabilityNotAvailable`（带实现指引）。
 """
 
+from storyforge.modes.flows import (
+    NAMESPACES,
+    FlowCard,
+    FlowConfigError,
+    load_flow,
+    load_flows,
+    load_namespace,
+)
 from storyforge.modes.genres import (
     GenreCard,
     GenreConfigError,
@@ -116,6 +124,12 @@ __all__ = [
     "GenreConfigError",
     "load_genre",
     "load_all_genres",
+    "FlowCard",
+    "FlowConfigError",
+    "NAMESPACES",
+    "load_flow",
+    "load_flows",
+    "load_namespace",
     "ScaleSpec",
     "ScaleConfigError",
     "scale_spec",
