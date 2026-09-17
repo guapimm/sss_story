@@ -415,12 +415,37 @@ class PipelineStage(StrEnum):
 
 
 class ConfirmPoint(StrEnum):
-    """7 个人工确认点（决策 D-14）。
+    """人工确认点（决策 D-14 + 阶段 2-3 的 learn 扩展）。
+
+    ## story 侧（C-1~C-7，决策 D-14）
 
     强制（5 个，各全书 1 次，除卷末外）：
       C-1 圣经定稿 / C-2 骨架首批 / C-3 首章细纲 / C-4 全卷升级台阶 / C-5 黄金三章
     条件触发（2 个）：
       C-6 核心实体不可逆消失 / C-7 质量闸门连续失败
+
+    ## ★ learn 侧（L-1~L-2，阶段 2-3，用户决策：**独立命名空间**）
+
+        L-1 知识点确认       —— 联网研究产出的"要教什么"
+        L-2 平替修辞确认     —— "怎么说成世界内的话"
+
+    ### 为什么另开 L- 前缀而不是挤进 C-8/C-9
+
+    两条理由：
+
+    1. **顺序一致性**：L-1/L-2 发生在 C-1（圣经定稿）**之前** ——
+       知识点与说法先定，圣经才知道该写什么世界。
+       若叫 C-8/C-9，编号顺序（C-1 在 C-8 前）会与流程顺序相反，
+       而编号顺序正是阅读代码时的第一直觉。
+    2. **story / learn 低耦合**（用户明确要求）：两套确认点各成一体，
+       story 链路永远不会看到 L-*，learn 链路也不会被 C-* 干扰。
+
+    ### 为什么是两个而不是一个（用户决策：逐条确认）
+
+    L-1 确认「教什么」、L-2 确认「怎么说」是两件事。
+    混在一次确认里，用户改一个知识点会连带要重看整张映射表。
+    实际实现上 L-2 是**逐条**确认（每条映射独立 accept/reject），
+    见 `domain/learning.py` 的 `TermMapping.accepted`。
     """
 
     C1_BIBLE = "C1_bible"
@@ -431,6 +456,10 @@ class ConfirmPoint(StrEnum):
     C6_IRREVERSIBLE_LOSS = "C6_irreversible_loss"
     C7_QUALITY_GATE = "C7_quality_gate"
 
+    # ── learn 专属（阶段 2-3）──
+    L1_KNOWLEDGE_POINTS = "L1_knowledge_points"
+    L2_TERM_MAPPINGS = "L2_term_mappings"
+
 
 #: 强制确认点（每次运行都会触发）
 MANDATORY_CONFIRMS: frozenset[ConfirmPoint] = frozenset(
@@ -440,6 +469,10 @@ MANDATORY_CONFIRMS: frozenset[ConfirmPoint] = frozenset(
         ConfirmPoint.C3_FIRST_DETAIL,
         ConfirmPoint.C4_VOLUME_LADDER,
         ConfirmPoint.C5_GOLDEN_THREE,
+        # ★ learn 的两个是**强制**的：知识点与说法没定就不该开写
+        #   （它们发生在 C-1 之前，见类 docstring 的顺序说明）
+        ConfirmPoint.L1_KNOWLEDGE_POINTS,
+        ConfirmPoint.L2_TERM_MAPPINGS,
     }
 )
 
@@ -448,7 +481,24 @@ CONDITIONAL_CONFIRMS: frozenset[ConfirmPoint] = frozenset(
     {ConfirmPoint.C6_IRREVERSIBLE_LOSS, ConfirmPoint.C7_QUALITY_GATE}
 )
 
-assert MANDATORY_CONFIRMS | CONDITIONAL_CONFIRMS == set(ConfirmPoint)
+#: ★ learn 专属确认点 —— story 链路永远不会看到它们（两套各成一体）
+LEARN_CONFIRMS: frozenset[ConfirmPoint] = frozenset(
+    {ConfirmPoint.L1_KNOWLEDGE_POINTS, ConfirmPoint.L2_TERM_MAPPINGS}
+)
+
+#: ★ story 专属确认点（D-14 原有的 7 个）
+STORY_CONFIRMS: frozenset[ConfirmPoint] = (
+    MANDATORY_CONFIRMS | CONDITIONAL_CONFIRMS
+) - LEARN_CONFIRMS
+
+assert MANDATORY_CONFIRMS | CONDITIONAL_CONFIRMS == set(ConfirmPoint), (
+    "每个确认点必须属于「强制」或「条件触发」之一 —— "
+    "新增确认点时两处都要登记，否则它会永远不触发"
+)
+assert not (STORY_CONFIRMS & LEARN_CONFIRMS), (
+    "story 与 learn 的确认点不得重叠（用户要求两区域低耦合）"
+)
+assert STORY_CONFIRMS | LEARN_CONFIRMS == set(ConfirmPoint)
 
 
 class HealthAction(StrEnum):
@@ -585,6 +635,8 @@ __all__ = [
     "ConfirmPoint",
     "MANDATORY_CONFIRMS",
     "CONDITIONAL_CONFIRMS",
+    "LEARN_CONFIRMS",
+    "STORY_CONFIRMS",
     "HealthAction",
     "GateErrorCode",
     "LocationLevel",

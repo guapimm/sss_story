@@ -181,6 +181,8 @@ def cmd_research(args: argparse.Namespace) -> int:
 
 def add_learn_subparsers(sub) -> None:
     """把 learn 侧命令注册到主 parser（供 `cli.build_parser()` 调用）。"""
+    from storyforge.commands.learning import cmd_learn_map
+
     fl = sub.add_parser(
         "flows",
         help="流派清单（learn 的「流派可多选」可视化入口；零 LLM）",
@@ -215,6 +217,31 @@ def add_learn_subparsers(sub) -> None:
     rs.add_argument("--cache-stats", action="store_true",
                     help="只看缓存统计（不研究）")
     rs.set_defaults(func=cmd_research)
+
+    # ── learn-map：学习地图 + 两个确认点（L-1 知识点 / L-2 平替修辞）──
+    lm = sub.add_parser(
+        "learn-map",
+        help="学习地图：生成 / 查看 / **逐条确认** / 编辑 / 回退（learn 的 L-1/L-2）",
+    )
+    lm.add_argument(
+        "action",
+        choices=["gen", "show", "accept", "edit", "reject", "rollback", "history"],
+        help="gen 生成 / show 查看 / accept 确认 / edit 改 / reject 标重做 / "
+             "rollback 回退 / history 历史",
+    )
+    lm.add_argument("--book-id", type=int, required=True)
+    lm.add_argument("--topic", default="", help="研究主题（gen 用）")
+    lm.add_argument("--scale", default="standard", help="篇幅档位（gen 用）")
+    lm.add_argument("--genre", default="xianxia", help="题材（gen 用，决定种子映射）")
+    lm.add_argument("--points", action="store_true", help="accept：确认 L-1 知识点")
+    lm.add_argument("--mappings", nargs="*", default=None, metavar="TERM",
+                    help="accept：确认 L-2（可只确认指定术语；不带值=全部）")
+    lm.add_argument("--term", default="", help="edit/reject：要改的术语")
+    lm.add_argument("--replacement", default="", help="edit：新的世界内说法")
+    lm.add_argument("--revision", type=int, default=0, help="rollback：回退到第几版")
+    lm.add_argument("--force", action="store_true", help="accept：跳过校验")
+    lm.add_argument("--verbose", "-v", action="store_true", help="show：多打摘要")
+    lm.set_defaults(func=cmd_learn_map)
 
 
 __all__ = ["cmd_flows", "cmd_research", "add_learn_subparsers"]

@@ -153,6 +153,30 @@ class ArtifactStore:
     def series_plan_key(book_id: int) -> ArtifactRef:
         return ArtifactRef(f"books/{book_id}/series_plan.json")
 
+    # -- learn 专属（阶段 2-3）-----------------------------------------------
+
+    @staticmethod
+    def learning_map_key(book_id: int) -> ArtifactRef:
+        """学习地图（知识点 + 平替修辞表）。
+
+        ★ 放在 `learning/` 子目录下，与 story 的产物**物理隔开** ——
+        用户要求 story / learn 区域低耦合。它不参与正文生成，
+        坏掉不影响 story 链路。
+        """
+        return ArtifactRef(f"books/{book_id}/learning/map.json")
+
+    @staticmethod
+    def learning_map_backup_key(book_id: int, revision: int) -> ArtifactRef:
+        """学习地图的历史版本（**回退**用）。
+
+        ★ 用户明确要求确认过程"能**编辑 + 回退**"。
+        每次用户改动前先存一份带序号的快照 —— 回退因此是
+        "读回第 N 版"，而不是"凭记忆重做"。
+        """
+        return ArtifactRef(
+            f"books/{book_id}/learning/history/map_{revision:03d}.json"
+        )
+
     # -- 文本 ---------------------------------------------------------------
 
     def write_text(self, ref: ArtifactRef | str, text: str) -> ArtifactRef:

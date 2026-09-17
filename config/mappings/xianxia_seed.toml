@@ -1,0 +1,54 @@
+# 平替修辞**种子**：修仙玄幻（xianxia）
+#
+# 来源：旧项目 `backend/app/templates/scenes.py` 的 `mapping_rules`（10 条）。
+#
+# ★ 这是**种子/示例**，不是最终稿 —— 每本书的术语表必须自创
+#   （`scenes.py:14` 原文：名称与阶梯必须按本书自创）。
+#   用途：① 给生成平替修辞的 Agent 当 few-shot；② 无 key 时走通确认流程。
+#
+# 加载器：src/storyforge/modes/mappings.py
+
+genre = "xianxia"
+description = "代码大陆/灵气世界，知识点化作功法、法宝与境界"
+style_prompt = "东方玄幻成长流：可用宗门、功法、器物、境界，但名称与阶梯必须按本书自创，禁止套用炼气筑基金丹等现成表。每个知识点对应一种本书自洽的力量形式。正文禁止出现编程符号、英文关键字或伪代码行。"
+
+# 平替修辞表（原术语 → 世界内说法）
+[[mappings]]
+term = "基础概念"
+replacement = "灵根/入门心法"
+
+[[mappings]]
+term = "变量/常量"
+replacement = "储物符/封印之物"
+
+[[mappings]]
+term = "数据类型"
+replacement = "灵气品相"
+
+[[mappings]]
+term = "函数"
+replacement = "自创功法"
+
+[[mappings]]
+term = "类与对象"
+replacement = "炼器图谱/傀儡之术"
+
+[[mappings]]
+term = "循环"
+replacement = "轮回诀"
+
+[[mappings]]
+term = "条件判断"
+replacement = "心镜诀/岔路抉择"
+
+[[mappings]]
+term = "库/模块"
+replacement = "先辈秘典"
+
+[[mappings]]
+term = "报错/异常"
+replacement = "心魔反噬"
+
+[[mappings]]
+term = "难度等级"
+replacement = "本书自创的进阶层次"

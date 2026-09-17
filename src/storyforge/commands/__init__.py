@@ -17,5 +17,11 @@ from storyforge.commands.learn import (
     cmd_flows,
     cmd_research,
 )
+from storyforge.commands.learning import cmd_learn_map
 
-__all__ = ["add_learn_subparsers", "cmd_flows", "cmd_research"]
+__all__ = [
+    "add_learn_subparsers",
+    "cmd_flows",
+    "cmd_research",
+    "cmd_learn_map",
+]

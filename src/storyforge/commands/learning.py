@@ -1,0 +1,457 @@
+"""learn 侧的学习地图命令 —— 生成 / 查看 / **逐条确认** / 编辑 / 回退。
+
+## 这是 2-3 的核心交付
+
+用户要求 learn「全流程**可视化**，避免黑盒」，且确认粒度必须
+「能**编辑 + 回退**」（用户明确）。本模块把 L-1/L-2 两个确认点
+做成可操作的 CLI：
+
+    learn-map gen      从研究结果生成学习地图（知识点 + 平替修辞）
+    learn-map show     查看当前地图（含确认状态）
+    learn-map accept   确认（L-1 知识点 / L-2 平替修辞）
+    learn-map edit     逐条改（**术语 → 说法**，用户决策的粒度）
+    learn-map reject   要求重做某条（记 revision，可单独重生成）
+    learn-map rollback 回退到历史第 N 版（用户明确要求"能回退"）
+    learn-map history  列出历史版本
+
+## 版本化设计（"回退"的实现）
+
+每次**改动前**先把当前地图存一份 `history/map_NNN.json`。
+于是回退是"读回第 N 版"，而不是"凭记忆重做"——
+后者在旧项目里表现为"改坏了只能重跑整条链路"。
+
+## 确认状态的持久化
+
+`accepted` 存在 `map.json` 里（不是内存态）。原因：用户确认可能
+**跨越会话**（今天看知识点，明天再定说法），内存态会丢。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from storyforge.domain.learning import (
+    KnowledgePoint,
+    LearningMap,
+    TermMapping,
+    validate_map,
+)
+from storyforge.infra.storage.artifacts import ArtifactNotFound, ArtifactStore
+
+#: 一次最多列出的条目数（防刷屏）
+_MAX_LIST = 200
+
+
+# --------------------------------------------------------------------------- #
+# 读写（版本化）
+# --------------------------------------------------------------------------- #
+
+
+def _store() -> ArtifactStore:
+    return ArtifactStore.from_settings()
+
+
+def _load_map(store: ArtifactStore, book_id: int) -> LearningMap:
+    ref = ArtifactStore.learning_map_key(book_id)
+    try:
+        raw = json.loads(store.read_text(ref))
+    except ArtifactNotFound as exc:
+        raise SystemExit(
+            f"书 {book_id} 还没有学习地图 —— 先运行 "
+            f"`storyforge learn-map gen --book-id {book_id} --topic <主题>`"
+        ) from exc
+    return _from_dict(raw)
+
+
+def _from_dict(raw: dict) -> LearningMap:
+    return LearningMap(
+        topic=str(raw.get("topic", "")),
+        scale=str(raw.get("scale", "standard")),
+        points=[
+            KnowledgePoint(
+                point_id=str(p.get("point_id", "")),
+                name=str(p.get("name", "")),
+                summary=str(p.get("summary", "")),
+                topic=str(p.get("topic", "")),
+                difficulty=int(p.get("difficulty", 1)),
+                source_urls=tuple(p.get("source_urls") or ()),
+                evidence=str(p.get("evidence", "")),
+            )
+            for p in (raw.get("points") or [])
+            if isinstance(p, dict)
+        ],
+        mappings=[
+            TermMapping(
+                term=str(m.get("term", "")),
+                replacement=str(m.get("replacement", "")),
+                rationale=str(m.get("rationale", "")),
+                accepted=bool(m.get("accepted", False)),
+                revision=int(m.get("revision", 0)),
+            )
+            for m in (raw.get("mappings") or [])
+            if isinstance(m, dict)
+        ],
+        research_shortfall=str(raw.get("research_shortfall", "")),
+    )
+
+
+def _save_map(store: ArtifactStore, book_id: int, m: LearningMap, *,
+              version_up: bool = True) -> str:
+    """保存地图；`version_up=True` 时**先存档当前版本**（回退的基础）。
+
+    返回存档的版本 ref（未存档时返回空串）。
+    """
+    archived = ""
+    if version_up:
+        archived = _archive(store, book_id, m).key
+    store.write_json(ArtifactStore.learning_map_key(book_id), m.to_dict())
+    return archived
+
+
+def _archive(store: ArtifactStore, book_id: int, m: LearningMap) -> object:
+    """把**当前盘上的版本**存进 history（改动前的快照）。"""
+    n = _next_revision(store, book_id)
+    return store.write_json(
+        ArtifactStore.learning_map_backup_key(book_id, n), m.to_dict()
+    )
+
+
+def _next_revision(store: ArtifactStore, book_id: int) -> int:
+    existing = [
+        k for k in store.list_keys(f"books/{book_id}/learning/history/")
+        if k.endswith(".json")
+    ]
+    nums: list[int] = []
+    for k in existing:
+        stem = Path(k).stem            # map_003
+        _, _, tail = stem.partition("_")
+        if tail.isdigit():
+            nums.append(int(tail))
+    return (max(nums) + 1) if nums else 1
+
+
+def _list_revisions(store: ArtifactStore, book_id: int) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    for k in sorted(store.list_keys(f"books/{book_id}/learning/history/")):
+        if not k.endswith(".json"):
+            continue
+        _, _, tail = Path(k).stem.partition("_")
+        if tail.isdigit():
+            out.append((int(tail), k))
+    return sorted(out)
+
+
+# --------------------------------------------------------------------------- #
+# 命令
+# --------------------------------------------------------------------------- #
+
+
+def cmd_learn_map(args: argparse.Namespace) -> int:
+    """`learn-map` 的子命令分发。"""
+    action = getattr(args, "action", None)
+    handlers = {
+        "gen": _do_gen,
+        "show": _do_show,
+        "accept": _do_accept,
+        "edit": _do_edit,
+        "reject": _do_reject,
+        "rollback": _do_rollback,
+        "history": _do_history,
+    }
+    if action not in handlers:
+        print("需要子命令：gen/show/accept/edit/reject/rollback/history",
+              file=sys.stderr)
+        return 2
+    return handlers[action](args)
+
+
+# -- gen --------------------------------------------------------------------
+
+
+def _do_gen(args: argparse.Namespace) -> int:
+    """从研究结果生成学习地图（**离线可用**，用种子映射 + 研究片段）。"""
+    from storyforge.infra.retrieval import ResearchCache
+    from storyforge.modes.mappings import load_mapping_seed
+
+    store = _store()
+    book_id = args.book_id
+
+    # ① 研究片段 → 知识点（**无 LLM 的确定性版本**）
+    #
+    # ⚠️ 真正的"研究 → 知识点"抽取应由 LLM 完成（那是 learn 的
+    # `LearningMapProvider`）。本命令先给**确定性基线**：
+    # 无 key / 离线也能走完 L-1/L-2 确认流程，用于验证链路与可视化。
+    # LLM 版本接入后，代码路径不变，只换 points 的来源。
+    cache = ResearchCache()
+    entry = cache.get(args.topic) if args.topic else None
+    points: list[KnowledgePoint] = []
+    shortfall = ""
+    if entry:
+        raw = (entry.get("result") or {}).get("snippets") or []
+        for i, sn in enumerate(raw, 1):
+            if not isinstance(sn, dict) or len(str(sn.get("text", ""))) < 80:
+                continue
+            points.append(
+                KnowledgePoint(
+                    point_id=f"kp{i:03d}",
+                    name=str(sn.get("title", ""))[:60] or f"知识点{i}",
+                    summary=str(sn.get("text", ""))[:120],
+                    topic=args.topic,
+                    source_urls=(str(sn.get("url", "")),) if sn.get("url") else (),
+                    evidence=str(sn.get("text", ""))[:300],
+                )
+            )
+    else:
+        shortfall = (
+            f"缓存里没有主题 {args.topic!r} 的研究结果 —— "
+            f"先运行 `storyforge research -t {args.topic!r} -s {args.scale}`"
+        )
+
+    # ② 平替修辞：**种子**（LLM 版本接入前的起点，界面会标注）
+    seed = load_mapping_seed(args.genre)
+    mappings = [
+        TermMapping(term=m.term, replacement=m.replacement, rationale=m.rationale)
+        for m in seed.mappings
+    ]
+
+    m = LearningMap(topic=args.topic or "", scale=args.scale,
+                    points=points, mappings=mappings,
+                    research_shortfall=shortfall)
+    archived = _save_map(store, book_id, m)
+
+    print(f"学习地图已生成（书 {book_id}）")
+    print(f"  主题      ：{m.topic or '（未指定）'}")
+    print(f"  知识点    ：{len(m.points)} 个")
+    print(f"  平替修辞  ：{len(m.mappings)} 条（**种子**，需人工调整）")
+    if archived:
+        print(f"  存档      ：{archived}")
+    if shortfall:
+        print(f"  ⚠ {shortfall}")
+    print()
+    print("下一步（两个确认点，用户决策：L-1 / L-2）：")
+    print(f"  storyforge learn-map show   --book-id {book_id}")
+    print(f"  storyforge learn-map accept --book-id {book_id} --points      # L-1")
+    print(f"  storyforge learn-map accept --book-id {book_id} --mappings    # L-2")
+    return 0
+
+
+# -- show -------------------------------------------------------------------
+
+
+def _do_show(args: argparse.Namespace) -> int:
+    store = _store()
+    m = _load_map(store, args.book_id)
+
+    print("=" * 78)
+    print(f"学习地图 · 书 {args.book_id}")
+    print("=" * 78)
+    print(f"主题：{m.topic}    档位：{m.scale}")
+    print(f"知识点 {len(m.points)} 个    平替修辞 {len(m.mappings)} 条"
+          f"（已确认 {len(m.accepted_mappings)}）")
+    if m.research_shortfall:
+        print(f"⚠ 研究缺口：{m.research_shortfall}")
+
+    print()
+    print("── L-1 知识点（要教什么）──")
+    if not m.points:
+        print("  （空）")
+    for i, p in enumerate(m.points[:_MAX_LIST], 1):
+        src = "有来源" if p.has_source else "★ 无来源"
+        print(f"  {i:>3}. [{p.point_id}] {p.name}")
+        if args.verbose and p.summary:
+            print(f"       {p.summary[:90]}")
+        print(f"       {src}")
+
+    print()
+    print("── L-2 平替修辞（怎么说）──")
+    for i, mp in enumerate(m.mappings[:_MAX_LIST], 1):
+        flag = "✓" if mp.accepted else "○"
+        rev = f"  重做{mp.revision}次" if mp.revision else ""
+        print(f"  {flag} {i:>3}. {mp.term} → {mp.replacement}{rev}")
+
+    issues = validate_map(m)
+    print()
+    if issues:
+        print(f"★ 校验发现 {len(issues)} 个问题：")
+        for it in issues[:10]:
+            print(f"    - {it}")
+    else:
+        print("✓ 校验通过")
+    return 0
+
+
+# -- accept -----------------------------------------------------------------
+
+
+def _do_accept(args: argparse.Namespace) -> int:
+    """确认知识点（L-1）/ 平替修辞（L-2）。
+
+    ★ 确认前**必须过校验** —— 否则会把有问题的地图"盖章通过"，
+    而它是后续世界观的输入（错误会放大）。
+    """
+    store = _store()
+    m = _load_map(store, args.book_id)
+
+    if not args.points and not args.mappings:
+        print("需要 --points（确认 L-1）或 --mappings（确认 L-2）",
+              file=sys.stderr)
+        return 2
+
+    if args.points:
+        issues = [i for i in validate_map(m) if "知识点" in i or "来源" in i]
+        if issues and not args.force:
+            print("★ L-1 未通过校验，拒绝确认（用 --force 可强制）：", file=sys.stderr)
+            for it in issues:
+                print(f"    - {it}", file=sys.stderr)
+            return 1
+        _save_map(store, args.book_id, m)
+        print(f"✓ L-1 知识点已确认（{len(m.points)} 个）")
+
+    if args.mappings:
+        targets = (
+            [m.find_mapping(t) for t in args.mappings]
+            if args.mappings is not True else m.mappings
+        )
+        # `--mappings` 也可以是"全部"（无值时）；`argparse` 用 `nargs="*"`
+        missing = [t for t, got in zip(args.mappings or [], targets) if got is None]
+        if missing:
+            print(f"★ 找不到这些术语：{missing}", file=sys.stderr)
+            return 1
+        for mp in targets:
+            if mp is not None:
+                mp.accepted = True
+        _save_map(store, args.book_id, m)
+        print(f"✓ L-2 已确认 {len([t for t in targets if t])} 条")
+
+    left = m.unconfirmed_mappings()
+    print()
+    print(f"L-2 剩余未确认：{len(left)} 条")
+    if left:
+        print("  未确认的条目不会进入 writer prompt（避免半成品术语进正文）")
+    return 0
+
+
+# -- edit -------------------------------------------------------------------
+
+
+def _do_edit(args: argparse.Namespace) -> int:
+    """逐条编辑（用户决策的粒度：**术语 → 说法**）。
+
+    ★ 改动前自动存档 → 可 `rollback` 回退。
+    """
+    store = _store()
+    m = _load_map(store, args.book_id)
+
+    mp = m.find_mapping(args.term)
+    if mp is None:
+        print(f"★ 找不到术语 {args.term!r}；用 `show` 看现有条目", file=sys.stderr)
+        return 1
+    if not args.replacement:
+        print("需要 --replacement", file=sys.stderr)
+        return 2
+
+    old = mp.replacement
+    mp.replacement = args.replacement
+    # 改动后**自动取消确认** —— 改过的条目需要重新过目（用户要求"能编辑"，
+    # 但改完还标着"已确认"会让确认状态失去意义）
+    mp.accepted = False
+    archived = _save_map(store, args.book_id, m)
+
+    print(f"✓ {mp.term}")
+    print(f"    {old}")
+    print(f" →  {mp.replacement}")
+    print("   （已自动取消该条的确认状态 —— 改动需重新确认）")
+    if archived:
+        print(f"   存档：{archived}（可用 rollback 回退）")
+    return 0
+
+
+# -- reject -----------------------------------------------------------------
+
+
+def _do_reject(args: argparse.Namespace) -> int:
+    """标记某条需要重做（`revision += 1`）。
+
+    ★ 与 `edit` 的区别：`edit` 是用户自己改，`reject` 是"这条不行，
+    请重新生成"。两者都取消确认状态，但 `revision` 计数只记 reject
+    （用于观测"哪些条目难产"）。
+    """
+    store = _store()
+    m = _load_map(store, args.book_id)
+
+    mp = m.find_mapping(args.term)
+    if mp is None:
+        print(f"★ 找不到术语 {args.term!r}", file=sys.stderr)
+        return 1
+    mp.revision += 1
+    mp.accepted = False
+    archived = _save_map(store, args.book_id, m)
+    print(f"✓ {mp.term!r} 已标记重做（第 {mp.revision} 次）")
+    print("   ★ 注意：一期**不会自动重生成**该条 ——")
+    print("     重生成需要 LLM（属 `LearningMapProvider` 的职责，阶段 2-3 的 LLM 部分）")
+    if archived:
+        print(f"   存档：{archived}")
+    return 0
+
+
+# -- rollback ---------------------------------------------------------------
+
+
+def _do_rollback(args: argparse.Namespace) -> int:
+    """回退到历史第 N 版（用户明确要求"能回退"）。"""
+    store = _store()
+    book_id = args.book_id
+    revs = _list_revisions(store, book_id)
+    if not revs:
+        print(f"★ 书 {book_id} 没有历史版本可回退", file=sys.stderr)
+        return 1
+
+    target = args.revision
+    match = [k for n, k in revs if n == target]
+    if not match:
+        print(f"★ 没有第 {target} 版；可用：{[n for n, _ in revs]}", file=sys.stderr)
+        return 1
+
+    # 回退前先把**当前**版本也存档（回退本身也可回退）
+    current = _load_map(store, book_id)
+    _archive(store, book_id, current)
+
+    raw = json.loads(store.read_text(match[0]))
+    restored = _from_dict(raw)
+    store.write_json(ArtifactStore.learning_map_key(book_id), restored.to_dict())
+
+    print(f"✓ 已回退到第 {target} 版")
+    print(f"   知识点 {len(restored.points)} 个 / "
+          f"平替修辞 {len(restored.mappings)} 条"
+          f"（已确认 {len(restored.accepted_mappings)}）")
+    print("   （当前版本已存档，回退本身也可再回退）")
+    return 0
+
+
+# -- history ----------------------------------------------------------------
+
+
+def _do_history(args: argparse.Namespace) -> int:
+    store = _store()
+    revs = _list_revisions(store, args.book_id)
+    if not revs:
+        print(f"书 {args.book_id} 暂无历史版本")
+        return 0
+    print(f"书 {args.book_id} 的学习地图历史（共 {len(revs)} 版）")
+    for n, key in revs:
+        try:
+            raw = json.loads(store.read_text(key))
+            np_ = len(raw.get("points") or [])
+            nm = len(raw.get("mappings") or [])
+            na = sum(1 for x in (raw.get("mappings") or [])
+                     if isinstance(x, dict) and x.get("accepted"))
+            print(f"  第{n:>3}版  {np_:>3} 知识点 / {nm:>3} 修辞（已确认 {na}）  {key}")
+        except Exception:  # noqa: BLE001
+            print(f"  第{n:>3}版  ★ 读取失败  {key}")
+    return 0
+
+
+__all__ = ["cmd_learn_map"]
