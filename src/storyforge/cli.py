@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from storyforge import __version__
+from storyforge.commands.learn import add_learn_subparsers, cmd_flows, cmd_research
 from storyforge.config import REPO_ROOT, get_settings, reset_settings
 from storyforge.doctor import run_doctor
 
@@ -482,73 +483,6 @@ def cmd_write(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# flows（流派清单 —— learn 的「流派可多选」可视化入口）
-# --------------------------------------------------------------------------- #
-
-
-def cmd_flows(args: argparse.Namespace) -> int:
-    """列出/查看流派卡（**零 LLM、零网络**）。
-
-    ## 为什么要有这个命令（用户要求"全流程可视化，避免黑盒"）
-
-    learn 的目标流程第二步是「选研究主题和小说题材，流派**可多选**」——
-    用户必须先**看到**可选清单与每张卡的内容，才能做选择。
-    否则又是黑盒：系统说"已按悟道流生成"，而用户不知道悟道流是什么。
-
-    两个命名空间（实测两套数据语义不同，见 `modes/flows.py`）：
-      · `tropes`   16 个通用叙事套路（story 用，已被题材引用）
-      · `xianxia`  25 个修仙流派（learn 用，可多选）
-    """
-    from storyforge.modes.flows import NAMESPACES, load_flow, load_namespace
-
-    ns = args.namespace
-    if ns == "all":
-        namespaces = list(NAMESPACES)
-    else:
-        namespaces = [ns]
-
-    for i, name in enumerate(namespaces):
-        if i:
-            print()
-        cards = load_namespace(name)
-        print(f"══ {name} ══  {NAMESPACES.get(name, '')}")
-        if not cards:
-            print("  （目录为空或不存在）")
-            continue
-        print(f"  共 {len(cards)} 个\n")
-        for fid, c in cards.items():
-            # 一行摘要：id / 名 / 卖点
-            hook = c.hook[:44] + ("…" if len(c.hook) > 44 else "")
-            print(f"  {fid:<24} {c.name:<12} {hook}")
-
-    # --detail：打印指定流派的完整卡（供用户确认）
-    if args.detail:
-        print()
-        for fid in args.detail:
-            found = None
-            for name in namespaces:
-                try:
-                    found = load_flow(fid, name)
-                    break
-                except Exception:  # noqa: BLE001
-                    continue
-            if found is None:
-                print(f"★ 找不到流派 {fid!r}", file=sys.stderr)
-                return 2
-            print("─" * 76)
-            print(f"【{found.namespace}/{found.id}】")
-            print("─" * 76)
-            print(found.writer_block(include_example=args.with_example))
-            print()
-
-    if not args.detail:
-        print()
-        print("查看某流派完整卡：storyforge flows --detail <id> [--with-example]")
-        print("learn 侧流派可多选：传多个 id 即可（顺序即权重顺序）")
-    return 0
-
-
-# --------------------------------------------------------------------------- #
 # report（Token 与成本报告）
 # --------------------------------------------------------------------------- #
 
@@ -640,23 +574,9 @@ def build_parser() -> argparse.ArgumentParser:
     rp = sub.add_parser("report", help="Token 与成本报告")
     rp.set_defaults(func=cmd_report)
 
-    fl = sub.add_parser(
-        "flows",
-        help="流派清单（learn 的「流派可多选」可视化入口；零 LLM）",
-    )
-    fl.add_argument(
-        "--namespace", "-n", default="all",
-        help="命名空间：all / tropes（16 通用套路）/ xianxia（25 修仙流派）",
-    )
-    fl.add_argument(
-        "--detail", "-d", nargs="+", metavar="ID",
-        help="打印这些流派的完整卡（可多个，learn 侧即多选）",
-    )
-    fl.add_argument(
-        "--with-example", action="store_true",
-        help="完整卡里带上 arc_example（风格示例，规划期用）",
-    )
-    fl.set_defaults(func=cmd_flows)
+    # learn 侧的可视化命令（flows / research）——
+    # 实现在 `commands/learn.py`（拆出的理由见该模块 docstring）
+    add_learn_subparsers(sub)
 
     return p
 

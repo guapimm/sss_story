@@ -258,6 +258,56 @@ class ObservabilitySettings(BaseModel):
     blank_rate_alert: float = 0.03
 
 
+class ResearchSettings(BaseModel):
+    """联网研究配置（learn 专属，阶段 2-2）。
+
+    ## 触发策略（用户决策：按知识点数量目标决定轮次）
+
+    `learn` 的目标流程要求"按篇幅需要**动态调整**，一次不够后续动态补充"。
+    判据不是"搜了几轮"，而是**知识点够不够**：
+
+      1. 按篇幅档位算目标知识点数（`points_per_scale`）
+      2. 每轮研究产出若干知识点，累计到目标就停
+      3. 不够则继续搜（换角度），直到 `max_rounds` 或目标达成
+
+    这样"停"和"续"都有可解释的依据，而不是拍一个轮次数。
+    """
+
+    #: Tavily API key 的环境变量名（值本身从 `.env` 读，不入库）
+    api_key_env: str = "TAVILY_API_KEY"
+    #: 检索服务地址
+    endpoint: str = "https://api.tavily.com/search"
+
+    #: 单轮检索条数
+    max_results_per_query: int = 5
+    #: 检索深度：`basic`（快、便宜）/ `advanced`（深、贵）
+    search_depth: str = "basic"
+
+    #: ★ 各篇幅档位的**目标知识点数** —— 决定研究轮次
+    #:
+    #: 依据：旧项目 `estimator.py` 用 `points_count` 推导章数
+    #: （`chapter_count = max(mini, min(cap, points_count * 4))`），
+    #: 即**约 4 章讲 1 个知识点**。此处反推目标点数，
+    #: 使"篇幅 ↔ 知识点"两端一致。
+    points_per_scale: dict[str, int] = Field(
+        default_factory=lambda: {
+            "fast": 8,
+            "standard": 25,
+            "grand": 60,
+            "ultra": 150,
+        }
+    )
+
+    #: 单主题最多研究轮数（防无限搜）
+    max_rounds: int = 6
+    #: 检索结果缓存 TTL（天）—— 旧项目有 `RESEARCH_CACHE_TTL_DAYS`
+    cache_ttl_days: int = 30
+    #: 网络超时（秒）
+    timeout_s: float = 30.0
+    #: 失败重试次数（网络抖动不该让整本书失败）
+    max_attempts: int = 3
+
+
 class Settings(BaseSettings):
     """全局配置。所有模块通过 `get_settings()` 获取，不得直读环境变量。"""
 
@@ -271,7 +321,12 @@ class Settings(BaseSettings):
     data_dir: Path = DEFAULT_DATA_DIR
     config_dir: Path = DEFAULT_CONFIG_DIR
 
-    #: 一期只支持 story（决策 D-08）；learn 保留接口但不实现
+    #: 当前默认模式（story/learn）。
+    #:
+    #: ⚠️ 这只是**默认值**，不是运行时真相 —— 每本书的模式存
+    #: `books.mode`（阶段 0 起 `BookRepository.upsert` 会真正写入），
+    #: 由 `modes.registry.mode_for()` 翻译成能力实现。
+    #: 此前该字段是"只写不读的死配置"。
     mode: Literal["story", "learn"] = "story"
 
     llm: LLMSettings = Field(default_factory=LLMSettings)
@@ -281,6 +336,7 @@ class Settings(BaseSettings):
     structure_gate: StructureGateSettings = Field(default_factory=StructureGateSettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    research: ResearchSettings = Field(default_factory=ResearchSettings)
 
     @property
     def db_path(self) -> Path:
@@ -302,6 +358,24 @@ class Settings(BaseSettings):
 # --------------------------------------------------------------------------- #
 # .env 密钥加载（★ 唯一允许读密钥文件的入口）
 # --------------------------------------------------------------------------- #
+
+
+def resolve_secret(env_name: str) -> str | None:
+    """按环境变量名取密钥，**空串视为未配置**（返回 None）。
+
+    ## 为什么需要这个函数（而不是各处 `os.environ.get`）
+
+    契约规则 12 禁止业务代码散落直读 `os.environ` ——
+    旧项目 26 个 JSON + 81 个环境变量 + 7 个模块各自缓存，
+    且 `.env` 写的模型被 `llm_providers.json` **静默覆盖**。
+
+    因此所有密钥读取都必须经本模块（`config.py` 是规则 12 的例外之一）。
+
+    ⚠️ **永不回传值到日志** —— 调用方只应用它去发请求，
+    不要把返回值写进报错信息（`doctor` 打印的是**键名**，不是值）。
+    """
+    value = os.environ.get(env_name, "")
+    return value.strip() or None
 
 
 #: `.env` 的候选位置：仓库根优先，其次当前工作目录。
