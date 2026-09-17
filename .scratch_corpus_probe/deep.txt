@@ -1,0 +1,98 @@
+### Files whose chosen codec had replacement chars, or 0 chapters ###
+  - 《天涯客》作者：priest.txt  chosen=gb18030 repl=0 nchap=0 bom=None
+  - 《杀破狼》作者：priest.txt  chosen=gb18030 repl=0 nchap=0 bom=None
+  - 《某某》作者：木苏里.txt  chosen=gb18030 repl=55799 nchap=0 bom=UTF-16LE BOM (FF FE)
+  - 《破云2.吞海》作者：淮上（补肉版+5番外）.txt  chosen=gb18030 repl=0 nchap=0 bom=None
+  - 乱世为王.txt  chosen=utf-8 repl=0 nchap=0 bom=None
+  - 完结｜《溺酒》作者：口卡.txt  chosen=utf-8 repl=0 nchap=0 bom=None
+
+==============================================================================
+FILE: 《天涯客》作者：priest.txt
+  blob bytes = 635669
+  first 32 bytes hex: 20 0d 0a 0d 0a cc ec d1 c4 bf cd 0d 0a d7 f7 d5 df a3 ba 70 72 69 65 73 74 0d 0a 0d 0a 31 0d 0a
+  first 32 bytes repr: b' \r\n\r\n\xcc\xec\xd1\xc4\xbf\xcd\r\n\xd7\xf7\xd5\xdf\xa3\xbapriest\r\n\r\n1\r\n'
+  [whole] utf-8-sig  FAIL @5 (invalid continuation byte)
+  [whole] utf-8      FAIL @5 (invalid continuation byte)
+  [whole] gb18030    OK  chars=327474 repl=0
+  [whole] gbk        OK  chars=327474 repl=0
+  [whole] utf-16     FAIL @370 (illegal UTF-16 surrogate)
+  [whole] utf-16-le  FAIL @370 (illegal UTF-16 surrogate)
+  [whole] utf-16-be  FAIL @16 (illegal encoding)
+  [whole] big5       FAIL @139 (illegal multibyte sequence)
+  [whole/even] utf-16-le  FAIL @370
+  [whole/even] utf-16-be  FAIL @16
+==============================================================================
+FILE: 《杀破狼》作者：priest.txt
+  blob bytes = 1305068
+  first 32 bytes hex: 20 20 20 20 20 20 0d 0a 0d 0a 0d 0a a1 a1 ca e9 c3 fb a3 ba c9 b1 c6 c6 c0 c7 0d 0a a1 a1 a1 a1
+  first 32 bytes repr: b'      \r\n\r\n\r\n\xa1\xa1\xca\xe9\xc3\xfb\xa3\xba\xc9\xb1\xc6\xc6\xc0\xc7\r\n\xa1\xa1\xa1\xa1'
+  [whole] utf-8-sig  FAIL @12 (invalid start byte)
+  [whole] utf-8      FAIL @12 (invalid start byte)
+  [whole] gb18030    OK  chars=665562 repl=0
+  [whole] gbk        OK  chars=665562 repl=0
+  [whole] utf-16     FAIL @34 (illegal encoding)
+  [whole] utf-16-le  FAIL @34 (illegal encoding)
+  [whole] utf-16-be  FAIL @108 (illegal encoding)
+  [whole] big5       FAIL @103 (illegal multibyte sequence)
+  [whole/even] utf-16-le  FAIL @34
+  [whole/even] utf-16-be  FAIL @108
+==============================================================================
+FILE: 《某某》作者：木苏里.txt
+  blob bytes = 1453602
+  first 32 bytes hex: ff fe 20 00 20 00 0d 00 0a 00 0a 30 d0 67 d0 67 0b 30 5c 4f 05 80 1a ff 28 67 cf 82 cc 91 0d 00
+  first 32 bytes repr: b'\xff\xfe \x00 \x00\r\x00\n\x00\n0\xd0g\xd0g\x0b0\\O\x05\x80\x1a\xff(g\xcf\x82\xcc\x91\r\x00'
+  [whole] utf-8-sig  FAIL @0 (invalid start byte)
+  [whole] utf-8      FAIL @0 (invalid start byte)
+  [whole] gb18030    FAIL @0 (illegal multibyte sequence)
+  [whole] gbk        FAIL @0 (illegal multibyte sequence)
+  [whole] utf-16     OK  chars=726800 repl=0
+  [whole] utf-16-le  OK  chars=726801 repl=0
+  [whole] utf-16-be  FAIL @58 (illegal UTF-16 surrogate)
+  [whole] big5       FAIL @0 (illegal multibyte sequence)
+  [whole/even] utf-16-le  OK chars=726801
+  [whole/even] utf-16-be  FAIL @58
+==============================================================================
+FILE: 《破云2.吞海》作者：淮上（补肉版+5番外）.txt
+  blob bytes = 1870365
+  first 32 bytes hex: 0d 0a 0d 0a a1 b6 c6 c6 d4 c6 32 cd cc ba a3 a1 b7 d7 f7 d5 df a3 ba bb b4 c9 cf 0d 0a 0d 0a ce
+  first 32 bytes repr: b'\r\n\r\n\xa1\xb6\xc6\xc6\xd4\xc62\xcd\xcc\xba\xa3\xa1\xb7\xd7\xf7\xd5\xdf\xa3\xba\xbb\xb4\xc9\xcf\r\n\r\n\xce'
+  [whole] utf-8-sig  FAIL @4 (invalid start byte)
+  [whole] utf-8      FAIL @4 (invalid start byte)
+  [whole] gb18030    OK  chars=1012340 repl=0
+  [whole] gbk        OK  chars=1012340 repl=0
+  [whole] utf-16     FAIL @150 (illegal UTF-16 surrogate)
+  [whole] utf-16-le  FAIL @150 (illegal UTF-16 surrogate)
+  [whole] utf-16-be  FAIL @20 (illegal encoding)
+  [whole] big5       FAIL @224 (illegal multibyte sequence)
+  [whole/even] utf-16-le  FAIL @150
+  [whole/even] utf-16-be  FAIL @20
+==============================================================================
+FILE: 乱世为王.txt
+  blob bytes = 1963618
+  first 32 bytes hex: 0d 0a 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 0d 0a 0d 0a e5 8d b7 e4 b8 80 26 23 38 32 32 36 3b e6
+  first 32 bytes repr: b'\r\n------------\r\n\r\n\xe5\x8d\xb7\xe4\xb8\x80&#8226;\xe6'
+  [whole] utf-8-sig  OK  chars=728977 repl=0
+  [whole] utf-8      OK  chars=728977 repl=0
+  [whole] gb18030    FAIL @39 (illegal multibyte sequence)
+  [whole] gbk        FAIL @39 (illegal multibyte sequence)
+  [whole] utf-16     OK  chars=981809 repl=0
+  [whole] utf-16-le  OK  chars=981809 repl=0
+  [whole] utf-16-be  OK  chars=981809 repl=0
+  [whole] big5       FAIL @18 (illegal multibyte sequence)
+  [whole/even] utf-16-le  OK chars=981809
+  [whole/even] utf-16-be  OK chars=981809
+==============================================================================
+FILE: 完结｜《溺酒》作者：口卡.txt
+  blob bytes = 910596
+  first 32 bytes hex: e6 ba ba e9 85 92 0a e4 bd 9c e8 80 85 ef bc 9a e5 a5 b6 e5 8f a3 e5 8d a1 0a e7 ae 80 e4 bb 8b
+  first 32 bytes repr: b'\xe6\xba\xba\xe9\x85\x92\n\xe4\xbd\x9c\xe8\x80\x85\xef\xbc\x9a\xe5\xa5\xb6\xe5\x8f\xa3\xe5\x8d\xa1\n\xe7\xae\x80\xe4\xbb\x8b'
+  [whole] utf-8-sig  OK  chars=310457 repl=0
+  [whole] utf-8      OK  chars=310457 repl=0
+  [whole] gb18030    FAIL @11 (illegal multibyte sequence)
+  [whole] gbk        FAIL @11 (illegal multibyte sequence)
+  [whole] utf-16     OK  chars=455298 repl=0
+  [whole] utf-16-le  OK  chars=455298 repl=0
+  [whole] utf-16-be  OK  chars=455298 repl=0
+  [whole] big5       FAIL @4 (illegal multibyte sequence)
+  [whole/even] utf-16-le  OK chars=455298
+  [whole/even] utf-16-be  OK chars=455298

@@ -1,0 +1,115 @@
+## DZIP repair verification (all 5 .tar + 2 nested .zip) ##
+
+=== 《一屋暗灯》by麦香鸡呢（实体番）.tar (tar) ===
+  REPAIR OK -> '《一屋暗灯》by麦香鸡呢（实体番）.dzip'
+     member='《一屋暗灯》by麦香鸡呢（实体番）.txt' usize=773499 csize=356073 method=8
+     decode utf-8: OK  chars=262991
+     chapter-heading matches: 75
+        VERBATIM: '第1章'
+        VERBATIM: '第2章'
+        VERBATIM: '第3章'
+     header block (first 6 nonblank lines):
+        '\ufeff《一屋暗灯》'
+        '作者：麦香鸡呢'
+        'Original Novel - BL - 中篇 - 完结'
+        '现代 - 三观不正 - 强制爱 - 骨科'
+        '文案：'
+        '时隔十年，宋谨回到宋家，宋星阑对他说的最多的一句话是：宋谨，你真恶心。'
+
+=== 《可怜的s畜》（实体番）.tar (tar) ===
+  REPAIR OK -> '《可怜的社畜》by东度日 未删减 实体番 30个番外全.dzip'
+     member='《可怜的社畜》by东度日 未删减 实体番 30个番外全.txt' usize=841570 csize=389068 method=8
+     decode utf-8: OK  chars=300786
+     chapter-heading matches: 78
+        VERBATIM: '第1章'
+        VERBATIM: '第2章'
+        VERBATIM: '第3章'
+     header block (first 6 nonblank lines):
+        '《可怜的社畜》作者：东度日'
+        '简介：又惨又倒霉'
+        '疯批长发美人A X软弱可怜社畜B'
+        '商野X周颂'
+        '作为一个出生在ABO世界里的社畜，既不是极具侵略性的Alpha，也不是娇软可人的Omega。'
+        '他只是一个Beta，没有信息素也闻不到'
+
+=== 《尾钩》（实体书番外）.tar (tar) ===
+  REPAIR OK -> '《尾钩》（实体书番外）.dzip'
+     member='《尾钩》（实体书番外）.txt' usize=475701 csize=227297 method=8
+     decode utf-8: OK  chars=165221
+     chapter-heading matches: 51
+        VERBATIM: '第1章 - Past'
+        VERBATIM: '第2章 - Present'
+        VERBATIM: '第3章 - Present'
+     header block (first 6 nonblank lines):
+        '题名：尾钩'
+        '作者：larivegauche'
+        '简介：当浪子遇上君子，当什么都没有的遇上什么都不缺的'
+        '其他标签：（继续）空中情缘|职业文|强强|互攻|非典型炮友变情人'
+        '一个约会三次上床，睡了三次分手，在一起三年后结婚的故事。'
+        '又名：两个妹控的空客飞行员的爱情长跑'
+
+=== 《放学等我》补番+实体番.tar (tar) ===
+  REPAIR OK -> '《放学等我》补番+实体番.dzip'
+     member='《放学等我》补番+实体番.txt' usize=1333453 csize=606067 method=8
+     decode utf-8: OK  chars=465203
+     chapter-heading matches: 101
+        VERBATIM: '第1章'
+        VERBATIM: '第2章'
+        VERBATIM: '第3章'
+     header block (first 6 nonblank lines):
+        '\ufeff《放学等我》'
+        '作者：酱子贝'
+        '文案'
+        '喻繁看班里那位新来的转班生非常不爽。'
+        '对方朝他看了一眼。'
+        '喻繁：他在找我约架。'
+
+=== 《欲言难止》by麦香鸡呢 未删 实体.tar (tar) ===
+  REPAIR OK -> '《欲言难止》by麦香鸡呢 未删 实体.dzip'
+     member='《欲言难止》by麦香鸡呢 未删 实体.txt' usize=1267088 csize=591539 method=8
+     decode utf-8: OK  chars=433845
+     chapter-heading matches: 109
+        VERBATIM: '第1章'
+        VERBATIM: '第2章'
+        VERBATIM: '第3章'
+     header block (first 6 nonblank lines):
+        '\ufeff----------------------------------------------------'
+        'id：山有木兮木有枝，'
+        '----------------------------------------------------'
+        '本作品来自互联网,本人不做任何负责/内容版权归作者所有。'
+        '----------------------------------------------------'
+        '☆、山有木兮木有枝整理'
+
+=== 你的雪人能活多久.zip (zip) ===
+  REPAIR OK -> '你的雪人能活多久/【补车】《你的雪人能活多久》作者：稚楚.dzip'
+     member='【补车】《你的雪人能活多久》作者：稚楚/' usize=0 csize=0 method=0
+     decode utf-8: OK  chars=0
+     chapter-heading matches: 0
+     header block (first 6 nonblank lines):
+     member='【补车】《你的雪人能活多久》作者：稚楚/【补车】《你的雪人能活多久》作者：稚楚.txt' usize=1474991 csize=625436 method=8
+     decode utf-8: OK  chars=508029
+     chapter-heading matches: 82
+        VERBATIM: '第1章 倒数计时 “Alpha都是狗。”……'
+        VERBATIM: '第2章 被迫相亲 人生是一场巨大的裹尸布大赛……'
+        VERBATIM: '第3章 救命稻草 [56天20时05分20秒……'
+     header block (first 6 nonblank lines):
+        '名称: 你的雪人能活多久'
+        '作者: 稚楚'
+        '祝知希26年来过着精彩纷呈的人生，从非洲到南极，从背包客到志愿者，主打就是折腾。可某天醒来，他手心意外多了个生命倒计时——[60天0时0分0秒]'
+        '我只能活六十天了？？？'
+        '几天后的他被迫参加相亲，对象是个无趣的考古系教授、空有美貌的面瘫Alpha，比雪人还冷冰冰。'
+        '祝知希：“我是beta，跟我结婚等同绝育。”'
+
+=== 完结｜《屏香记》作者：小狐狸的大宝贝.zip (zip) ===
+  REPAIR OK -> '完结｜《屏香记》作者：小狐狸的大宝贝/完结｜《屏香记》作者：小狐狸的大宝贝.dzip'
+     member='完结｜《屏香记》作者：小狐狸的大宝贝.txt' usize=631031 csize=283355 method=8
+     decode utf-8: OK  chars=215321
+     chapter-heading matches: 1
+        VERBATIM: '第一回放了个彩鸮的，第二回放了个仙鹤的，第三回放了个鸳鸯的……每个纸鸢上都绑着世面上稀奇的罕物，有时是一枚波斯胸针，有时是一尊弥勒小木雕，这些小玩意儿都足以把墙里这个未出阁的小姐勾'
+     header block (first 6 nonblank lines):
+        '屏香记'
+        '作者：小狐狸的大宝贝'
+        '简介：'
+        '霸凌同窗后被他用另一种方式“霸凌”了小狐狸的大宝贝原创小说-BL-长篇-完结古代-HE-架空世界-强制爱1v1元锡白也曾有过一段年少无知的时候，那时他仗着家里有钱有势，每日在书院里横着走，还经常有意无'
+        '01'
+        '元锡白想，或许，他当年确实做得太过了。'

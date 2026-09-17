@@ -29,6 +29,18 @@ data/
 *.db-wal
 *.db-shm
 
+# 参考语料（266MB / 66 文件，不入库）
+#
+# ★ 为什么移出：语料是全仓最大体积来源（266MB，最大单文件 39.5MB），
+#   却在第一个 commit 就进了历史 → `.git` 已 186MB。
+#   它是**只读参考数据**（说话人风格/章节切分探针），不是产物、不是代码，
+#   全仓 `*.py` **零引用**（实测）。
+# ★ 本机文件**全部保留**（`git rm --cached` 只停止跟踪，不删工作树）。
+#   D-16 / 语料盘点（`doc/research/09-corpus-inventory.md`）的结论仍有效。
+# ★ 历史里仍有 186MB —— 彻底瘦身需改写历史（无 remote，风险可控），
+#   留待单独决定，不在阶段 0 做。
+wangwenxiaoshuo/
+
 # ⚠️ 密钥绝不入库
 # 旧项目教训：backend/free_pool.json 含明文 API Key 且全仓零读者；
 #           .gitignore 自承历史上有 13 个 llm_providers.json.bak_* "裸奔"过。

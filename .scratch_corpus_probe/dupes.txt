@@ -1,0 +1,84 @@
+## Title-level duplicate groups ##
+
+### group key: ''  (2 files)
+   - 完结｜《屏香记》作者：小狐狸的大宝贝.zip   0.27 MB
+   - 完结｜《溺酒》作者：口卡.txt   0.87 MB
+
+### group key: '剑来'  (2 files)
+   - 《剑来》（网络版精校全本）.txt   37.57 MB
+   - 剑来.rar   10.55 MB
+
+### group key: '大奉打更人'  (2 files)
+   - 大奉打更人.rar   3.57 MB
+   - 大奉打更人.txt   11.86 MB
+
+### group key: '尾钩'  (2 files)
+   - 《尾钩》作者：塞纳左岸（larivegauche）.txt   0.23 MB
+   - 《尾钩》（实体书番外）.tar   0.22 MB
+
+### group key: '欲言难止'  (2 files)
+   - 《欲言难止》by麦香鸡呢 未删 实体.tar   0.57 MB
+   - 《欲言难止》作者：麦香鸡呢.txt   0.77 MB
+
+
+## Content-level comparison of duplicate groups ##
+
+### ''
+   完结｜《屏香记》作者：小狐狸的大宝贝.zip
+      container=0.27MB  decoded_chars=215321  enc=utf-8-sig  chapters=1
+      first3=['第一回放了个彩鸮的，第二回放了个仙鹤的，第三回放了个鸳鸯的……每个纸鸢上都绑着世面上稀奇的罕物，有时是一枚波斯胸针，有时是一尊弥勒小木雕，这些小玩意儿都足以把墙里这个未出阁的小姐勾得心痒难耐。']
+      last3=['第一回放了个彩鸮的，第二回放了个仙鹤的，第三回放了个鸳鸯的……每个纸鸢上都绑着世面上稀奇的罕物，有时是一枚波斯胸针，有时是一尊弥勒小木雕，这些小玩意儿都足以把墙里这个未出阁的小姐勾得心痒难耐。']
+      text_sha1_12=15a152af7f5a  head='屏香记\\n作者：小狐狸的大宝贝\\n简介：\\n霸凌同窗后被他用另一种方式“霸凌”了小狐狸的大宝贝原创小说-BL-长篇-完结古代-'
+   完结｜《溺酒》作者：口卡.txt
+      container=0.87MB  decoded_chars=310457  enc=utf-8-sig  chapters=0
+      first3=[]
+      last3=[]
+      text_sha1_12=5d937254c2ff  head='溺酒\\n作者：奶口卡\\n简介：\\n异时空穿越！Biu~奶口卡原创小说-BL-完结-HE魔幻现实-ABO-先婚后爱-穿越长篇没有'
+
+### '剑来'
+   《剑来》（网络版精校全本）.txt
+      container=37.57MB  decoded_chars=13311612  enc=utf-8-sig  chapters=1229
+      first3=['第一章 新书感言', '第二章 上架感言', '第三章 请假一天，顺便小聊几句。']
+      last3=['第一千二百一十六章 定风波', '第一千二百一十七章 一叶落', '第一千二百一十八章 看书人']
+      text_sha1_12=8ad471696e70  head='剑来 作者：烽火戏诸侯\\n\\n\\n内容简介：\\n\u3000\u3000大千世界，无奇不有。\\n\u3000\u3000我陈平安，唯有一剑，可搬山，倒海，降妖，镇魔，敕神'
+   剑来.rar
+      container=10.55MB  decoded_chars=12434998  enc=utf-8-sig  chapters=1136
+      first3=['第1章 惊蛰', '第2章 开门', '第3章 日出']
+      last3=['第一千一百三十章 有个不用回答的问题', '第一千一百三十一章 三三得几', '第一千一百三十二章 为何就山，可问春风']
+      text_sha1_12=ed504cc3a41c  head='\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+
+### '大奉打更人'
+   大奉打更人.rar
+      container=3.57MB  decoded_chars=4391800  enc=utf-8-sig  chapters=919
+      first3=['第一章 牢狱之灾', '第二章 妖物作祟', '第三章 仙侠世界一样能推理']
+      last3=['第二章 劫后', '第三章 一统天下', '第四章 庆功宴']
+      text_sha1_12=23d3386a8218  head='\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+   大奉打更人.txt
+      container=11.86MB  decoded_chars=4326286  enc=utf-8-sig  chapters=919
+      first3=['第一章 牢狱之灾', '第二章 妖物作祟', '第三章 仙侠世界一样能推理']
+      last3=['第二章 劫后', '第三章 一统天下', '第四章 庆功宴']
+      text_sha1_12=3da9e1cb8127  head='《大奉打更人》 作者：卖报小郎君\r\\n\r\\n内容简介：\r\\n\u3000\u3000这个世界，有儒；有道；有佛；有妖；有术士。\r\\n\u3000\u3000警校毕业的许'
+
+### '尾钩'
+   《尾钩》作者：塞纳左岸（larivegauche）.txt
+      container=0.23MB  decoded_chars=121185  enc=gb18030  chapters=47
+      first3=['第1章第1章Past', '第2章第2章Present', '第3章第3章Present']
+      last3=['第45章第45章', '第46章第46章', '第47章 尾声']
+      text_sha1_12=0581a74d1798  head=' \r\\n\u3000\u3000题名：尾钩\r\\n\u3000\u3000作者：塞纳左岸/larivegauche\r\\n\u3000\u3000简介：\r\\n\u3000\u3000当浪子遇上君子，当什么都没有的'
+   《尾钩》（实体书番外）.tar
+      container=0.22MB  decoded_chars=165221  enc=utf-8-sig  chapters=51
+      first3=['第1章 - Past', '第2章 - Present', '第3章 - Present']
+      last3=['第49章 番外·Crosswind', '第50章 实体番外', '第51章 番外·恋爱SOP']
+      text_sha1_12=8fee2bd9a1fb  head='\u3000\u3000题名：尾钩\r\r\\n作者：larivegauche\r\r\\n\u3000\u3000简介：当浪子遇上君子，当什么都没有的遇上什么都不缺的\r\r\\n\u3000'
+
+### '欲言难止'
+   《欲言难止》by麦香鸡呢 未删 实体.tar
+      container=0.57MB  decoded_chars=433844  enc=utf-8-sig  chapters=109
+      first3=['第1章', '第2章', '第3章']
+      last3=['第107章补实体番外【一秋与湖水】', '第108章补实体番外【昔与今朝】', '第109章补万圣节微博小剧场']
+      text_sha1_12=7ff3e2d489fe  head='----------------------------------------------------\r\\nid：山有木'
+   《欲言难止》作者：麦香鸡呢.txt
+      container=0.77MB  decoded_chars=416517  enc=gb18030  chapters=99
+      first3=['第1章', '第2章', '第3章']
+      last3=['第97章', '第98章', '第99章']
+      text_sha1_12=315848b09106  head='欲言难止\r\\n作者：麦香鸡呢\r\\n\r\\n文案\r\\n\r\\n双A\r\\n-\r\\n陆赫扬 X 许则\r\\n许则认真思考过，他和陆赫扬唯一的共同点在'

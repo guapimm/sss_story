@@ -202,8 +202,10 @@ _SIMILE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"宛如[^，。；！？]{1,20}"),
     re.compile(r"犹如[^，。；！？]{1,20}"),
     re.compile(r"恰似[^，。；！？]{1,20}"),
-    re.compile(r"犹如[^，。；！？]{1,20}"),
 )
+# ⚠️ 此表**去重**：曾把 `犹如` 写了两遍（`literal.py` 旧 L203/L205），
+# 导致 `simile_count` 对它**双计数** —— 实测「他的眼睛犹如星辰般明亮，
+# 她的笑容犹如春风」应得 2，实得 4。`test_literal_simile_dedup` 防复发。
 
 #: 强情绪词（旧项目要求「每章 ≤2 次」，其余用差异化行为呈现）
 STRONG_EMOTION_WORDS: tuple[str, ...] = (

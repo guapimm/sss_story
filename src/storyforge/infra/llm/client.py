@@ -659,7 +659,7 @@ class LLMClient:
         self,
         ctx: CallContext,
         model: ModelCapability,
-        provider: ProviderCapability,
+        provider: ProviderSpec,
         status: CallStatus,
         started: float,
         *,

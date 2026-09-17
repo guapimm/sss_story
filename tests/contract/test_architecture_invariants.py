@@ -127,30 +127,149 @@ def test_rule02b_domain_has_no_sqlalchemy(src_root: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-MODE_BRANCH_TOKENS = {"book_kind", "is_story", "_is_story", "book_kind_"}
+#: 表示「模式」的**属性名 / 标识符**。
+#:
+#: ⚠️ 2026-09-17 加固：原集合只有 `book_kind` 系列，**没有 `mode`** ——
+#: 而本项目自己的字段就叫 `Book.mode` / `settings.mode`
+#: （`infra/storage/models.py:83`、`config.py:275`）。
+#: 也就是说：**用自己推荐的字段名去判模式，原规则完全看不见。**
+#: 实测 `if book.mode == "learn":` 在原规则下 CI 全绿。
+MODE_BRANCH_TOKENS = {
+    "book_kind", "is_story", "_is_story", "book_kind_",
+    "mode", "book_mode", "modes",
+}
+
+#: 表示「模式取值」的**字符串字面量**。
+#:
+#: 比较的另一半：`== "story"` / `== "learn"`。
+#: 单独出现（如 `mode: Literal["story","learn"]` 的声明）不该报，
+#: 必须与**比较运算**同现才算分支 —— 见 `_mode_branch_hits`。
+MODE_VALUE_LITERALS = {"story", "learn"}
+
+#: 允许出现模式判断的模块（模式层自身 + 声明式配置）。
+#:
+#: `config.py` 里 `mode: Literal["story","learn"]` 是**类型声明**不是分支，
+#: 但为保守起见仍靠 `_mode_branch_hits` 的"必须是比较"来放行，
+#: 不在这里开白名单 —— 白名单越少越安全。
+MODE_BRANCH_ALLOWED: frozenset[str] = frozenset()
+
+#: 规则 3 的扫描范围。
+#:
+#: ⚠️ 2026-09-17 加固：原来只扫 `domain` + `graph/nodes`，
+#: 而旧项目的教训恰恰是「门面外的直读散落在各处」
+#: （`main.py` 路由层、`drift.py` 形参、`continue_story.py`）。
+#: 因此改为**扫全部 `src/storyforge/`**，只有 `modes/` 是模式层、天然允许。
+_MODE_SCAN_SKIP = ("modes",)
 
 
-def test_rule03_no_mode_branching_in_domain_and_nodes(src_root: Path) -> None:
-    """规则 3：`domain/` 与 `graph/nodes/` 不得直接判模式。
+def _mode_branch_hits(tree: ast.Module) -> list[tuple[int, str]]:
+    """找出**真正的模式分支**（比较运算），而不是"提到了 mode"。
 
-    防的是旧项目「门面建成但门面外仍有 30+ 处直读 `book_kind`」。
-    所有模式差异必须经 `modes/` 层的 Protocol（决策 D-08）。
+    ## 为什么必须看比较、不能只看名字（实测的漏检）
+
+    原实现只收集 `ast.Attribute.attr` 与字符串字面量，于是：
+
+        if book.mode == "learn":        ← attr="mode"(不在旧集合) + "learn"(不在旧集合)
+                                           → **测试通过**（漏检）
+
+    修正后判据是**比较运算的一侧是模式属性、另一侧是模式字面量**，覆盖：
+
+        book.mode == "learn"        settings.mode != "story"
+        book.mode in ("learn",)     "learn" == book.mode
+        book.mode.value == "learn"  BookMode.LEARN == book.mode
+
+    ⚠️ 设计稿 `doc/01-总体架构.md:442` 用的正是 `ast.Compare` 形态，
+    而原实现没有实现它 —— 这次把实现与设计稿对齐。
+    """
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+
+        operands = [node.left, *node.comparators]
+        # ① 该比较里有没有"模式属性"
+        has_attr = False
+        attr_name = ""
+        for op in operands:
+            for sub in ast.walk(op):
+                if isinstance(sub, ast.Attribute) and sub.attr in MODE_BRANCH_TOKENS:
+                    has_attr = True
+                    attr_name = sub.attr
+                    break
+                if isinstance(sub, ast.Name) and sub.id in MODE_BRANCH_TOKENS:
+                    has_attr = True
+                    attr_name = sub.id
+                    break
+            if has_attr:
+                break
+        # ② 该比较里有没有"模式字面量"
+        literals = [
+            s for _, s in _string_literals_in(node)
+            if s in MODE_VALUE_LITERALS
+        ]
+        # ③ 两者同现才算分支
+        if has_attr and literals:
+            hits.append((node.lineno, f"{attr_name} == {literals[0]!r}"))
+        elif has_attr and any(
+            isinstance(sub, ast.Attribute) and sub.attr == "value"
+            for op in operands for sub in ast.walk(op)
+        ):
+            # `book.mode.value == something` 这类也拦（取值未必是字面量）
+            hits.append((node.lineno, f"{attr_name}.value 参与比较"))
+    return hits
+
+
+def _string_literals_in(node: ast.AST) -> list[tuple[int, str]]:
+    """只收集 `node` 子树内的字符串字面量。"""
+    out: list[tuple[int, str]] = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            out.append((getattr(sub, "lineno", 0), sub.value))
+    return out
+
+
+def test_rule03_no_mode_branching(src_root: Path) -> None:
+    """规则 3：**全 `src/` 共享代码**不得直接判模式，必须经 `modes/` Protocol。
+
+    防的是旧项目「门面建成但门面外仍有 **30+ 处**直读 `book_kind`」：
+    `main.py:1304` 路由层绕过门面、`main.py` 7 处 `kind=="story"`、
+    `drift.py` 4 处 `is_story` 形参、`architect.py:2895/2916` 裸 `_flow.kind`、
+    `continue_story.py` 6 处 `book.book_kind`。
+
+    ## 2026-09-17 加固（三处漏检，实测确认）
+
+    | 漏洞 | 后果 |
+    |---|---|
+    | `MODE_BRANCH_TOKENS` 不含 `mode` | 用**本项目自己的字段名**判模式 → 全绿 |
+    | 不含 `story`/`learn` 字面量 | `== "learn"` 的那一半看不见 |
+    | 只扫 `domain` + `graph/nodes` | 路由层 / infra / cli 的直读漏检 |
+    | 只看名字不看比较（设计稿要 `ast.Compare`）| 实现与 `01-总体架构.md:442` 不一致 |
+
+    四条一起修：集合补全 + 扫全 `src/` + 按**比较运算**判定。
+    `modes/` 自身允许（它就是模式层）。
     """
     offenders: list[str] = []
-    for sub in ("domain", "graph/nodes"):
-        for path in _iter_py(src_root / sub):
-            tree = _parse(path)
-            names = _imported_names(tree)
-            if "storyforge.modes" in names or "modes" in names:
-                continue  # 模式层本身允许
-            hits = sorted(
-                {n for _, n in _attr_names(tree) if n in MODE_BRANCH_TOKENS}
-                | {s for _, s in _string_literals(tree) if s in MODE_BRANCH_TOKENS}
-            )
-            if hits:
-                offenders.append(f"{path.relative_to(src_root)}: {hits}")
+    scanned = 0
+    for path in _iter_py(src_root):
+        rel = path.relative_to(src_root)
+        if rel.parts and rel.parts[0] in _MODE_SCAN_SKIP:
+            continue  # 模式层本身
+        if str(rel) in MODE_BRANCH_ALLOWED:
+            continue
+        scanned += 1
+        hits = _mode_branch_hits(_parse(path))
+        if hits:
+            detail = ", ".join(f"L{n}:{d}" for n, d in hits)
+            offenders.append(f"{rel}: {detail}")
+
+    # 自检：必须真的扫到文件，否则规则会**静默失效**（比报错更糟）
+    assert scanned > 0, (
+        "规则 3 没有扫到任何文件 —— 路径或跳过条件可能已过期，"
+        "本规则会静默失效"
+    )
     assert not offenders, (
-        "共享代码不得判模式（应经 modes/ Protocol）：\n  " + "\n  ".join(offenders)
+        "共享代码不得判模式（应经 modes/ Protocol，见决策 D-08）：\n  "
+        + "\n  ".join(offenders)
     )
 
 
@@ -681,4 +800,94 @@ def test_rule20_no_langsmith_hard_requirement(src_root: Path) -> None:
             offenders.append(str(path.relative_to(src_root)))
     assert not offenders, (
         "不得硬依赖 langsmith（无该环境变量时必须可用）：\n  " + "\n  ".join(offenders)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 规则 21：注解里的名字必须真的存在
+# --------------------------------------------------------------------------- #
+
+
+def test_rule21_annotations_reference_defined_names(src_root: Path) -> None:
+    """规则 21：**注解里引用的名字必须真的存在**（防"潜伏的 NameError"）。
+
+    ## 为什么需要这条（实测的真缺陷）
+
+    `infra/llm/client.py:662` 的 `_record_failure` 签名写着：
+
+        provider: ProviderCapability,
+
+    而全仓**从未定义过 `ProviderCapability`** —— 正确的类型是 `ProviderSpec`。
+    这个错误**可以在仓库里存活任意久而不被发现**，原因是一个巧合：
+
+        from __future__ import annotations
+
+    让**所有注解都变成惰性字符串**（PEP 563），于是：
+
+        · import 该模块 → 通过（注解不求值）
+        · 调用该函数   → 通过（注解不参与运行）
+        · 静态检查器   → 只有 `get_type_hints()` / mypy 才看
+
+    本项目**没有 mypy**，所以这个拼写错误一直没被任何测试发现。
+    它属于"**只写不读**"的变体：写了注解，但没有任何机制读它。
+
+    ## 判定口径
+
+    收集每个文件可见的名字（import / 定义 / 赋值 / 参数）+ `builtins`，
+    然后检查**函数签名与 AnnAssign 的注解**里的裸 `Name` 是否都在其中。
+
+    ⚠️ 只看**裸名**（`ast.Name`），不管 `x.y` 属性访问（那属于运行时属性，
+    AST 层面无法判定，会误报）。
+    """
+    import builtins  # noqa: PLC0415
+
+    known_builtins = set(dir(builtins))
+    offenders: list[str] = []
+
+    for path in _iter_py(src_root):
+        tree = _parse(path)
+        visible: set[str] = set(known_builtins)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    visible.add((a.asname or a.name).split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                for a in node.names:
+                    visible.add(a.asname or a.name)
+            elif isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                visible.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                visible.add(node.id)
+            elif isinstance(node, ast.arg):
+                visible.add(node.arg)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                visible.add(node.name)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                visible.update(node.names)
+
+        checked: list[ast.AST] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AnnAssign):
+                checked.append(node.annotation)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = (list(node.args.args) + list(node.args.kwonlyargs)
+                        + list(node.args.posonlyargs))
+                for a in args:
+                    if a.annotation:
+                        checked.append(a.annotation)
+                if node.returns:
+                    checked.append(node.returns)
+
+        for ann in checked:
+            for sub in ast.walk(ann):
+                if isinstance(sub, ast.Name) and sub.id not in visible:
+                    offenders.append(
+                        f"{path.relative_to(src_root)}:{sub.lineno} "
+                        f"注解名 `{sub.id}` 未定义"
+                    )
+
+    assert not offenders, (
+        "注解引用了不存在的名字（`from __future__ import annotations` "
+        "会让它静默存活）：\n  " + "\n  ".join(sorted(set(offenders)))
     )

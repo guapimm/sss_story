@@ -1,0 +1,9 @@
+ENTRY: '《越冬洄游》作者：博尔赫叁(补车+番外1).zip' isdir=False size=204952
+ENTRY: '解压码：2023' isdir=True size=-
+
+ZIP: E:\AI_project\story_commandcode\wangwenxiaoshuo\《越冬洄游》作者：博尔赫叁(补车+番外1)\《越冬洄游》作者：博尔赫叁(补车+番外1).zip
+magic: 50 4b 03 04 33 00 01 00 63 00 f5 53 81 5a 00 00
+  member='《越冬洄游》作者：博尔赫叁(补车+番外1)/《越冬洄游》作者：博尔赫叁(补车+番外1).zip' usize=204038 csize=204066 method=99 flag=0x1 encrypted=True
+  member='《越冬洄游》作者：博尔赫叁(补车+番外1)/' usize=0 csize=0 method=0 flag=0x0 encrypted=False
+  READ FAIL '《越冬洄游》作者：博尔赫叁(补车+番外1)/《越冬洄游》作者：博尔赫叁(补车+番外1).zip': RuntimeError: File '《越冬洄游》作者：博尔赫叁(补车+番外1)/《越冬洄游》作者：博尔赫叁(补车+番外1).zip' is encrypted, password required for extraction
+     with password b'2023': FAIL NotImplementedError: That compression method is not supported
