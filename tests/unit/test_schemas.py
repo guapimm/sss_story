@@ -378,6 +378,266 @@ def test_scene_extraction_normalizes_all_observed_shapes(
 
 
 # --------------------------------------------------------------------------- #
+# ★ 形状 F：list[str]（阶段 1 收尾实测，第 5 种形状）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("name,payload", [
+    ("list[str] 冒号分隔",
+     {"state_updates": ["林默：失忆", "林默：获得《住户须知》"]}),
+    ("list[str] 中文冒号",
+     {"state_updates": ["林默：情绪从疲惫变为惊恐"]}),
+    ("list[str] 自然句（没有分隔符）",
+     {"state_updates": ["林默情绪从疲惫变为极度惊恐"]}),
+    ("list[str] 破折号",
+     {"state_updates": ["林默——记忆缺失"]}),
+    ("list[str] JSON 串元素",
+     {"state_updates": ['{"entity":"林默","value":"失忆"}']}),
+    ("混合：dict 与 str 同现",
+     {"state_updates": [
+         {"entity": "林默", "field": "记忆", "value": "失忆"},
+         "王叔：死亡",
+     ]}),
+])
+def test_scene_extraction_accepts_list_of_strings(name: str, payload: dict) -> None:
+    """★★ 第 5 种形状：**外层是 list、元素是字符串**。
+
+    阶段 1 收尾实测（书 19 第 1 章真实 `write`）：
+
+        StructuredOutputError: 节点 scene_extractor 结构化输出校验失败（3 次尝试）
+        - `state_updates.0`：Input should be an object
+
+    根因：`normalize_record_list` 的入口判据是 `isinstance(v, dict)` ——
+    **外层是 list 时直接透传**，元素若是 `str` 就到不了归一逻辑。
+
+    ## 为什么必须接受而不是拒绝
+
+    与既有 4 种形状同理（模块 docstring 已论证）：模型把"谁变成了什么"
+    写成一行文字，**信息是完整的**；拒绝它 → 3 次重试全败 →
+    中断整个 `write`。本项目已因此崩过两次。
+
+    ## 判据
+
+    ① 不抛错；② `value` 非空（信息不得丢）；③ 能拆出实体名时要拆出来。
+    """
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    out = SceneExtractionOut.model_validate({
+        "summary": "林默在诡异楼道醒来", **payload,
+    })
+    assert out.state_updates, f"{name}：归一后一条都没有 —— 信息丢了"
+    assert all(s.value.strip() for s in out.state_updates), (
+        f"{name}：归一后 value 为空 —— 信息丢了，等于没归一"
+    )
+    # 能拆出实体名的必须拆出来（拆不出的才允许留空/兜底）
+    entities = [s.entity for s in out.state_updates]
+    if "林默" in str(payload):
+        assert "林默" in entities, (
+            f"{name}：文本里有明确的实体名「林默」，应当拆出来，实得 {entities}"
+        )
+
+
+def test_list_of_strings_keeps_full_text_when_no_entity_split() -> None:
+    """★ 拆不出实体名时**整条留作 value**，不得丢弃。
+
+    这是「信息不得丢」的底线：宁可把整句话放进 `value`，
+    也不能因为拆不出结构就把它扔掉。
+    """
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    long_sentence = "楼道里的气温忽然降了下来，墙上的字迹开始渗血"
+    out = SceneExtractionOut.model_validate({
+        "summary": "x", "state_updates": [long_sentence],
+    })
+    assert len(out.state_updates) == 1
+    assert long_sentence in out.state_updates[0].value, (
+        "拆不出实体名时，整条原文必须保留在 value 里"
+    )
+
+
+def test_list_of_strings_json_element_is_parsed() -> None:
+    """元素本身是 JSON 串时要解出来（模型有时把对象转义成字符串）。"""
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    out = SceneExtractionOut.model_validate({
+        "summary": "x",
+        "state_updates": ['{"entity":"林默","field":"记忆","value":"失忆"}'],
+    })
+    assert len(out.state_updates) == 1
+    s = out.state_updates[0]
+    assert s.entity == "林默", f"JSON 串元素未解析，entity={s.entity!r}"
+    assert s.value == "失忆"
+
+
+def test_list_of_strings_ignores_empty_entries() -> None:
+    """空串/纯空白元素不得产出空记录（会产生"幽灵状态变化"）。"""
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    out = SceneExtractionOut.model_validate({
+        "summary": "x",
+        "state_updates": ["", "   ", "林默：失忆", "\n"],
+    })
+    assert len(out.state_updates) == 1
+    assert out.state_updates[0].value.strip()
+
+
+# --------------------------------------------------------------------------- #
+# ★ 形状 G：「字段名: 值」对 —— **静默语义反转**（比崩溃更危险）
+# --------------------------------------------------------------------------- #
+
+
+def test_field_keyed_dict_is_not_read_as_entity() -> None:
+    """★★★ 「字段名: 值」对不得被误读成实体名。
+
+    ## 实测（书 19 第 1 章，阶段 1 收尾）
+
+    模型给的（`doc/research/_diag_scene_raw_b19c1.json`）：
+
+        "state_updates": {
+          "location": "+楼梯间",
+          "equipment": "+《住户须知》|来源:口袋中凭空出现",
+          "emotion": "恐慌→恐惧",
+          "goal": "遵守规则以求生存"
+        }
+
+    既有归一假设「**外层键 = 实体名**，内层键 = 字段名」→ 产出：
+
+        entity='location'   field='状态'  value='+楼梯间'
+        entity='equipment'  field='状态'  value='+《住户须知》…'
+
+    **没有报错**，但 `entity` 全是**字段名**。而本章主角是「林默」
+    （正文出现 18 次）—— 这些状态变化**没有一条挂在他身上**。
+
+    ★ 这是**静默数据损坏**：数据入库、看起来正常、实际全错。
+    比"崩溃"危险得多 —— 崩溃会被立刻发现，这个不会。
+    （本项目已记录过同类教训：「没有任何信号」与「信号为 0」是两回事。）
+
+    ## 判据
+
+    `location` / `equipment` / `emotion` / `goal` 是**字段名**，
+    不能当实体名 → 必须识别为「字段名: 值」对，
+    实体名留空或标为未知，**字段名归到 `field`**。
+    """
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    out = SceneExtractionOut.model_validate({
+        "summary": "林默在诡异楼道醒来",
+        "state_updates": {
+            "location": "+楼梯间",
+            "equipment": "+《住户须知》",
+            "emotion": "恐慌→恐惧",
+            "goal": "遵守规则以求生存",
+        },
+    })
+    assert len(out.state_updates) == 4
+
+    known_fields = {"location", "equipment", "emotion", "goal"}
+    for s in out.state_updates:
+        assert s.entity not in known_fields, (
+            f"★ 字段名 {s.entity!r} 被当成了实体名 —— "
+            f"静默语义反转（这些记录会挂在一个不存在的实体上）"
+        )
+    # 字段名必须被归到 field（信息不得丢）
+    got_fields = {s.field for s in out.state_updates}
+    assert got_fields & known_fields, (
+        f"字段名没有归到 field（实得 {got_fields}）—— 语义丢了"
+    )
+    # 值必须保留
+    assert all(s.value.strip() for s in out.state_updates)
+
+
+def test_plain_string_list_fields_are_not_split_into_records() -> None:
+    """★★ `deaths` / `unsupported` 是 **`list[str]`**，不得被"拆条"。
+
+    ## 这个测试防的是**我自己修形状 F 时引入的回归**
+
+    第一版把 6 个字段一视同仁地送进 `normalize_string_entries`，
+    于是 `deaths: ["中年男人"]` 被拆成 `[{"value": "中年男人"}]`
+    → `Input should be a valid string`。
+
+    用**真实落盘的模型输出**（`doc/research/_diag_scene_raw_b19c1.json`）
+    复验时当场抓到 —— 单测当时全绿，因为既有用例的 `deaths` 恰好是
+    空列表或 dict 形状。
+
+    ★ 教训：**字段的 schema 类型不同，归一动作就不能相同。**
+    这条测试把"哪些字段是记录列表、哪些是纯字符串列表"钉死。
+    """
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    out = SceneExtractionOut.model_validate({
+        "summary": "林默目睹中年男人被门后实体拖走",
+        "deaths": ["中年男人"],
+        "unsupported": ["住户须知", "楼梯间"],
+        "state_updates": ["林默：失忆"],
+    })
+    assert out.deaths == ["中年男人"], (
+        f"deaths 被拆坏了：{out.deaths}（应为纯字符串列表）"
+    )
+    assert out.unsupported == ["住户须知", "楼梯间"]
+    # 同一份数据里两类字段并存 —— 各按自己的规则归一
+    assert out.state_updates[0].entity == "林默"
+
+
+def test_real_captured_output_from_book19_validates() -> None:
+    """★★ 用**真实落盘的模型输出**做端到端复验（最硬的证据）。
+
+    来源：阶段 1 收尾跑真实 `write` 时，`scene_extractor` 输出被存到
+    `doc/research/_diag_scene_raw_b19c1.json`。
+
+    该输出同时包含两种新形状：
+      · `state_updates` 是 **dict 且键是字段名**（形状 G）
+      · `deaths` 是 **`list[str]`**（保持原样）
+
+    文件缺失时 skip（不 fake 数据 —— 假数据会让测试失去意义）。
+    """
+    import json
+    from pathlib import Path
+
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    p = (Path(__file__).resolve().parents[2] / "doc" / "research"
+         / "_diag_scene_raw_b19c1.json")
+    if not p.exists():
+        pytest.skip("真实模型输出样本不存在（需先跑 diag_scene_list_shape_real.py）")
+
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    out = SceneExtractionOut.model_validate(raw)
+
+    # deaths 保持纯字符串
+    assert all(isinstance(x, str) for x in out.deaths)
+    # state_updates 的 entity 不得是字段名（形状 G 的核心断言）
+    field_names = {"location", "equipment", "emotion", "goal"}
+    leaked = [s.entity for s in out.state_updates if s.entity in field_names]
+    assert not leaked, (
+        f"★ 字段名被当成实体名：{leaked} —— 静默语义反转复发了"
+    )
+    # 字段名必须归到 field，值必须保留
+    assert {s.field for s in out.state_updates} & field_names
+    assert all(s.value.strip() for s in out.state_updates)
+
+
+def test_real_entity_dict_still_reads_entity_correctly() -> None:
+    """★ 反向对照：**真·实体名**做外层键时**不得**被当成字段名。
+
+    防的是"为了修形状 G 而把既有 4 种形状改坏" ——
+    这是典型的过度修正风险（本届项目已记录：修 A 必须加 A 的反向对照）。
+    """
+    from storyforge.infra.llm.schemas import SceneExtractionOut  # noqa: PLC0415
+
+    out = SceneExtractionOut.model_validate({
+        "summary": "x",
+        "state_updates": {
+            "林默": "情绪从疲惫变为惊恐",
+            "王叔": {"位置": "楼梯间"},
+        },
+    })
+    entities = {s.entity for s in out.state_updates}
+    assert entities == {"林默", "王叔"}, (
+        f"真·实体名被误判成字段名了：{entities}"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 细纲结构
 # --------------------------------------------------------------------------- #
 

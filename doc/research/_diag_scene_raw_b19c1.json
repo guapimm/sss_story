@@ -1,0 +1,80 @@
+{
+  "summary": "林默在陌生楼道醒来，获得《住户须知》，目睹中年男人违反规则被怪物拖走，逃入楼梯间阅读规则后听到脚步声。",
+  "events": [
+    {
+      "time": "醒来后",
+      "location": "楼道",
+      "participants": [
+        "林默"
+      ],
+      "description": "林默醒来，发现自己在陌生楼道，从口袋中发现《住户须知》并开始阅读。",
+      "后果": "获得规则手册，开始了解环境规则。"
+    },
+    {
+      "time": "不久后",
+      "location": "楼道",
+      "participants": [
+        "中年男人",
+        "林默"
+      ],
+      "description": "中年男人违反规则拍打未发声的门，被门后怪物拖走并杀害。",
+      "后果": "林默目睹死亡，验证规则真实性，加剧恐惧。"
+    },
+    {
+      "time": "随后",
+      "location": "楼梯间",
+      "participants": [
+        "林默"
+      ],
+      "description": "林默逃入楼梯间，锁上门，阅读《住户须知》规则。",
+      "后果": "暂时安全，但听到楼梯间脚步声，面临新威胁。"
+    }
+  ],
+  "state_updates": {
+    "location": "+楼梯间",
+    "equipment": "+《住户须知》|来源:口袋中凭空出现",
+    "emotion": "恐慌→恐惧",
+    "goal": "遵守规则以求生存"
+  },
+  "deaths": [
+    "中年男人"
+  ],
+  "entities": [
+    {
+      "name": "林默",
+      "kind": "人物",
+      "intro_method": "直接出现"
+    },
+    {
+      "name": "中年男人",
+      "kind": "人物",
+      "intro_method": "出现"
+    },
+    {
+      "name": "怪物",
+      "kind": "非住户实体",
+      "intro_method": "事件中出现"
+    },
+    {
+      "name": "楼道",
+      "kind": "地点",
+      "intro_method": "描述"
+    },
+    {
+      "name": "楼梯间",
+      "kind": "地点",
+      "intro_method": "描述"
+    },
+    {
+      "name": "《住户须知》",
+      "kind": "物品",
+      "intro_method": "凭空出现"
+    },
+    {
+      "name": "规则",
+      "kind": "术语",
+      "intro_method": "手册中引入"
+    }
+  ],
+  "unsupported": []
+}

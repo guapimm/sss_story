@@ -18,6 +18,7 @@ hang / entities）→ `entity_classify` 空输出 **100%**。
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -72,7 +73,21 @@ class StateUpdateOut(BaseModel):
         （只留 `from` 会丢掉"变成了什么"，那是这条记录的全部意义）
     """
 
-    entity: str = Field(description="实体名")
+    #: ★ 有默认值 `""` —— 存在**合法的"没有实体名"**记录：
+    #:
+    #:   ① 形状 G（「字段名: 值」对，实测书 19 第 1 章）：
+    #:      `{"location": "+楼梯间"}` —— 外层键是**字段名**，不是实体名。
+    #:      强行编一个实体名（如 "location"）会造成**静默语义反转**
+    #:      （记录挂在不存在的实体上）；留空并标明"未知"才是诚实的。
+    #:   ② 形状 F 拆不出实体名的整句：`{"value": "楼道里的气温忽然降了"}`。
+    #:
+    #: 下游若需要实体名，应显式处理 `entity == ""`（表示"未指明"），
+    #: 而不是假设它总有值 —— 与 `field` 的默认值同一原则：
+    #: **代码不替模型猜**，但也不因此丢掉拿到的信息。
+    entity: str = Field(
+        default="",
+        description="实体名（未指明时留空字符串，不要编造）",
+    )
     #: ⚠️ `field` 有默认值 `"状态"` —— 模型把变化写成
     #: `{"李明": "情绪从疲惫变为恐惧"}` 时**没有单独给字段名**，
     #: 而那条记录的信息（谁变成了什么样）是完整的。
@@ -151,6 +166,23 @@ def normalize_record_list(v: Any) -> Any:
 
     模型没说"这是哪个字段"时**不要猜**。但也不能因此拒绝 ——
     所以 `StateUpdateOut.field` 有默认值 `"状态"`（最泛化的说法）。
+
+    ## ★★ 形状 G：「字段名: 值」对（阶段 1 收尾实测，**静默语义反转**）
+
+    实测原始输出（书 19 第 1 章）：
+
+        {"location": "+楼梯间", "equipment": "+《住户须知》",
+         "emotion": "恐慌→恐惧", "goal": "遵守规则以求生存"}
+
+    这里外层键**不是实体名，而是字段名** —— 模型把"本章主角的状态
+    按字段列出"了，这对它来说是自然的写法（prompt 里 `state_updates`
+    的说明正是"位置/境界/目标/情绪/装备等"）。
+
+    按"外层键=实体名"处理会产出 `entity='location'` ——
+    **不报错、看起来正常、实际全错**（本章主角是"林默"，出现 18 次，
+    这些记录没有一条挂在他身上）。这比崩溃危险：崩溃会被发现，这个不会。
+
+    判据见 `_FIELD_KEY_ALIASES`：外层键命中已知字段名 → 按字段处理。
     """
     if not isinstance(v, dict):
         return v
@@ -160,19 +192,229 @@ def normalize_record_list(v: Any) -> Any:
     for k, val in v.items():
         key = str(k).strip()
         if isinstance(val, dict):
-            for inner_k, inner_v in val.items():
-                out.append({
-                    "entity": key,
-                    "field": str(inner_k).strip(),
-                    "value": (f"{inner_v}" if not isinstance(inner_v, list)
-                              else "；".join(str(x) for x in inner_v)),
-                })
+            # 内层键是字段名 —— 但要先判外层键是不是字段名（形状 G 的变体）
+            if _is_field_key(key):
+                for inner_k, inner_v in val.items():
+                    out.append({
+                        "field": key if not _is_field_key(str(inner_k)) else str(inner_k).strip(),
+                        "value": _stringify(inner_v),
+                    })
+            else:
+                for inner_k, inner_v in val.items():
+                    out.append({
+                        "entity": key,
+                        "field": str(inner_k).strip(),
+                        "value": _stringify(inner_v),
+                    })
         elif isinstance(val, list):
             for x in val:
-                out.append({"entity": key, "value": str(x)})
+                out.append(_entry_for(key, x))
         else:
-            out.append({"entity": key, "value": str(val).strip()})
+            out.append(_entry_for(key, val))
     return out
+
+
+#: 已知的**字段名**（`state_updates` 里"哪个属性变了"的常见取值）。
+#:
+#: ★ 用途：区分「外层键是实体名」与「外层键是字段名」（形状 G）。
+#: 来源：`SCENE_EXTRACTOR_SYSTEM` 对 `state_updates` 的说明
+#: （"位置/境界/目标/情绪/装备等"）+ 实测观测到的英文写法。
+#:
+#: ⚠️ 只收**英文**键：中文键（"位置"/"情绪"）与实体名难以区分，
+#: 且实测的形状 G 全是英文 —— 加中文会带来误判风险（真有人叫"位置"）。
+_FIELD_KEY_ALIASES: frozenset[str] = frozenset({
+    # 状态类
+    "location", "position", "place", "equipment", "items", "item",
+    "emotion", "mood", "feeling", "goal", "objective", "status", "state",
+    "realm", "level", "rank", "cultivation", "power", "ability", "skill",
+    "condition", "health", "appearance", "identity", "role", "title",
+    "inventory", "money", "wealth", "faction", "affiliation", "relationship",
+    "knowledge", "memory", "plan", "intention", "attitude", "personality",
+})
+
+#: 中文**字段名**（`SCENE_EXTRACTOR_SYSTEM` 原文列举的那些）。
+#:
+#: ⚠️ 与英文表**分开**：中文只在"内层键"位置才认字段名
+#: （外层是中文时无法与实体名区分，故不做形状 G 判定）。
+_CN_FIELD_KEYS: frozenset[str] = frozenset({
+    "位置", "地点", "境界", "目标", "情绪", "装备", "物品", "状态",
+    "能力", "身份", "外貌", "心态", "认知", "记忆", "计划",
+})
+
+
+def _is_field_key(key: str) -> bool:
+    """该键是不是"字段名"（而非实体名）。"""
+    return key.strip().lower() in _FIELD_KEY_ALIASES
+
+
+def _stringify(v: Any) -> str:
+    """把值转成字符串（列表用「；」连接，与既有口径一致）。"""
+    if isinstance(v, list):
+        return "；".join(str(x) for x in v)
+    if isinstance(v, dict):
+        return "；".join(f"{k}：{x}" for k, x in v.items())
+    return str(v).strip()
+
+
+def _entry_for(key: str, val: Any) -> dict[str, Any]:
+    """构造**一条**记录 —— 自动判断 `key` 是实体名还是字段名（形状 G）。
+
+        {"location": "+楼梯间"}   → {"field": "location", "value": "+楼梯间"}
+        {"林默": "情绪变为惊恐"}   → {"entity": "林默", "value": "情绪变为惊恐"}
+    """
+    text = _stringify(val)
+    if _is_field_key(key):
+        return {"field": key.strip().lower(), "value": text}
+    return {"entity": key, "value": text}
+
+
+#: 记录元素的**分隔符**（"实体名<sep>值"）—— 按优先级尝试。
+#:
+#: ⚠️ 只用**有明确标记性**的分隔符：`：` / `:` / `——` / `|`。
+#: **不用**单破折号 `-` 或空格：它们会把「林默-失忆」这类正常内容拆错，
+#: 也会把整句话（"林默情绪从疲惫变为极度惊恐"）错误切开。
+_ENTRY_SEPARATORS: tuple[str, ...] = ("：", ":", "——", "|")
+
+
+def normalize_string_entries(v: Any) -> Any:
+    """把 `list[str]` 型的记录集合归成 dict 列表（**形状 F**）。
+
+    ## 为什么需要（阶段 1 收尾实测，第 5 种形状）
+
+    真实 `write` 崩在这里：
+
+        StructuredOutputError: 节点 scene_extractor 结构化输出校验失败
+        - `state_updates.0`：Input should be an object
+
+    根因：`normalize_record_list` 的入口判据是 `isinstance(v, dict)` ——
+    **外层是 list 时直接透传**，元素若是 `str` 就到不了归一逻辑。
+
+    ## 归一规则（对输入宽容，信息不得丢）
+
+        "林默：失忆"                        → {"entity":"林默","value":"失忆"}
+        "林默：情绪从疲惫变为惊恐"            → {"entity":"林默","value":"情绪从…"}
+        '{"entity":"林默","value":"失忆"}'   → 解 JSON 后原样返回
+        "林默情绪从疲惫变为极度惊恐"           → {"value":"<整句>"}   ← 拆不出就整条留
+        {"entity":"林默",...}（元素已是 dict）→ 原样保留
+
+    ★ 关键取舍：**拆不出实体名时整条留作 `value`**，不丢信息。
+    宁可把整句放进 value，也不能因为拆不出结构就扔掉它。
+    """
+    if not isinstance(v, list):
+        return v
+    out: list[Any] = []
+    for item in v:
+        # ① 已是 dict → 原样保留
+        if isinstance(item, dict):
+            out.append(item)
+            continue
+        # ② **不是字符串**也不是 dict → 原样保留，交给 Pydantic 处理。
+        #    ★ 这一支是实测踩出来的：调用方可能传**已构造的 Pydantic 对象**
+        #    （测试里 `SceneExtractionOut(events=[EventOut(...)])` 就是），
+        #    早先版本对它做 `str(item)` → 变成 `"description='...'"` 这种
+        #    **repr 串**，既不是 JSON 也无法拆条 → `Field required`。
+        #    Pydantic 本身能接受同类模型实例，**归一逻辑不该多管**。
+        if not isinstance(item, str):
+            out.append(item)
+            continue
+        text = item.strip()
+        if not text:
+            continue                      # 空串不产出"幽灵状态变化"
+        # ③ 元素本身是 JSON 串 → 解出来（模型有时把对象转义成字符串）
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+            except (ValueError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                out.append(parsed)
+                continue
+        # ④ 「实体名<sep>值」拆分
+        out.append(_split_entry(text))
+    return out
+
+
+def _split_entry(text: str) -> dict[str, Any]:
+    """把一行文字拆成 `{entity, value}`；拆不出实体名时只给 `value`。
+
+    三种尝试，按可靠性从高到低：
+
+      ① 显式分隔符（`：` / `:` / `——` / `|`）
+      ② 前缀「实体名 + **已知字段名**」（如 `林默情绪从疲惫变为惊恐`）
+      ③ 都不成 → 整条留作 `value`（**信息不得丢**）
+
+    拆出的"实体名"还会过一次 `_is_field_key` —— 因为模型可能写成
+    `"location: 楼梯间"`（英文冒号 + 字段名）。
+    """
+    # ① 显式分隔符
+    for sep in _ENTRY_SEPARATORS:
+        idx = text.find(sep)
+        if idx <= 0:
+            continue
+        head = text[:idx].strip()
+        tail = text[idx + len(sep):].strip()
+        if not head or not tail:
+            continue
+        # 头部过长 ⇒ 不是实体名，是整句话（防"林默走进了楼梯间：他感到…"被拆错）
+        if len(head) > 12:
+            continue
+        if _is_field_key(head):
+            return {"field": head.lower(), "value": tail}
+        return {"entity": head, "value": tail}
+
+    # ② 前缀「实体名 + 已知字段名」（无分隔符的自然句，实测形状 F-自然句）
+    hit = _split_name_field_prefix(text)
+    if hit is not None:
+        return hit
+
+    # ③ 拆不出 → 整条留作 value（**信息不得丢**）
+    return {"value": text}
+
+
+#: 中文人名的合理长度（2~4 字：`林默` / `陈砚` / `欧阳修远`）
+_NAME_LEN_RANGE: tuple[int, int] = (2, 4)
+
+
+def _split_name_field_prefix(text: str) -> dict[str, Any] | None:
+    """尝试把「实体名 + 已知字段名…」拆开；不成返回 `None`。
+
+    ## 为什么需要这一条
+
+    实测形状 F 里有**没有分隔符**的自然句：
+
+        "林默情绪从疲惫变为极度惊恐"
+
+    不拆的话整句只能塞进 `value` —— 信息虽在，但**挂不到任何角色身上**
+    （用户痛点 2「实体/势力追踪混乱」正是这类"记录没有归属"的后果）。
+
+    ## 判据（刻意收窄，避免误拆）
+
+    只有**同时满足**才拆：
+
+      1. 前缀是 2~4 字（人名量级）
+      2. **紧跟其后的字段名在 `_CN_FIELD_KEYS` 白名单里**
+
+    第 2 条是关键：它要求一个**已知**字段名紧邻，
+    所以 `"楼道里的气温忽然降了下来"`（`气温` 不在白名单）不会被拆。
+    这比"按标点/长度猜"可靠得多。
+
+    ⚠️ 已知的良性误判：`"他情绪失控了"` 会拆出 `entity="他"`（代词不是实体名）。
+    这比丢掉归属更可接受，且下游按实体表过滤时会自然淘汰。
+    """
+    for field_key in sorted(_CN_FIELD_KEYS, key=len, reverse=True):
+        idx = text.find(field_key)
+        # 字段名必须在**开头不远处**（前缀即实体名）
+        if not (_NAME_LEN_RANGE[0] <= idx <= _NAME_LEN_RANGE[1]):
+            continue
+        head = text[:idx].strip()
+        tail = text[idx + len(field_key):].strip()
+        if not head or not tail:
+            continue
+        # 前缀不得含标点/空白（那说明它不是紧凑的人名）
+        if any(c in head for c in "，。！？；：、 \t\n"):
+            continue
+        return {"entity": head, "field": field_key, "value": tail}
+    return None
 
 
 class InjuryUpdateOut(BaseModel):
@@ -256,6 +498,21 @@ class RelationUpdateOut(BaseModel):
     evidence: str = Field(default="", description="正文依据")
 
 
+#: 需要**摊平/拆条**的字段（schema 是 `list[Model]`）。
+#:
+#: ⚠️ 不要往里加 `deaths`/`unsupported` —— 见 `_PLAIN_STRING_LIST_FIELDS`。
+_RECORD_LIST_FIELDS: tuple[str, ...] = (
+    "state_updates", "injury_updates", "events", "entities",
+)
+
+#: schema 本就是 **`list[str]`** 的字段 —— 只允许 `str` → `[str]` 包装。
+#:
+#: ⚠️ 实测踩到：把它们放进 `_RECORD_LIST_FIELDS` 会让
+#: `deaths: ["中年男人"]` 被拆成 `[{"value": "中年男人"}]`
+#: → `Input should be a valid string`。**元素是名字，不是记录。**
+_PLAIN_STRING_LIST_FIELDS: tuple[str, ...] = ("deaths", "unsupported")
+
+
 class SceneExtractionOut(BaseModel):
     """`scene_extractor` 的输出：事件 + 状态 + 损伤。
 
@@ -290,17 +547,38 @@ class SceneExtractionOut(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_containers(cls, data: Any) -> Any:
-        """把字典形状的记录集合摊成列表（实测两轮形状不同）。"""
+        """把记录集合的**各种形状**归一到列表。
+
+        ★ 三类字段**分开处理**（踩过的坑：混在一起会把 `list[str]` 字段改坏）：
+
+        | 字段 | schema 类型 | 归一动作 |
+        |---|---|---|
+        | `state_updates` / `injury_updates` / `events` / `entities` | `list[Model]` | dict → 摊平；list[str] → 拆条 |
+        | `deaths` / `unsupported` | **`list[str]`** | 只做 `str` → `[str]` 包装，**不拆条** |
+        | 其余 | — | 不动 |
+
+        ⚠️ **`deaths`/`unsupported` 绝不能走"拆条"** ——
+        它们本来就是字符串列表，元素是**角色名/名词**，不是记录。
+        实测踩到：把 `"中年男人"` 拆成 `{"value": "中年男人"}` →
+        `list[str]` 校验失败（`Input should be a valid string`）。
+        """
         if not isinstance(data, dict):
             return data
         d = dict(data)
-        for f in ("state_updates", "injury_updates", "events", "entities",
-                  "deaths", "unsupported"):
-            if isinstance(d.get(f), dict):
-                d[f] = normalize_record_list(d[f])
-            elif isinstance(d.get(f), str):
-                # 单个字符串也见过（`unsupported` / `deaths` 只有一条时）
-                d[f] = [d[f]] if d[f].strip() else []
+        for f in _RECORD_LIST_FIELDS:
+            val = d.get(f)
+            if isinstance(val, dict):
+                d[f] = normalize_record_list(val)
+            elif isinstance(val, list):
+                # ★ 形状 F：元素可能是字符串（`list[str]`）
+                d[f] = normalize_string_entries(val)
+            elif isinstance(val, str):
+                d[f] = [val] if val.strip() else []
+        for f in _PLAIN_STRING_LIST_FIELDS:
+            val = d.get(f)
+            if isinstance(val, str):
+                # 只有一条时模型会给裸字符串
+                d[f] = [val] if val.strip() else []
         return d
 
 

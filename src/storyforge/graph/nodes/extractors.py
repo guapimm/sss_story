@@ -57,6 +57,63 @@ SCENE_EXTRACTOR_SYSTEM = """你是小说记录员。根据本章正文与当前�
 
 **只输出 JSON**，不要任何解释或代码块标记。
 
+## 输出骨架（字段名照抄，不要自造同义名）
+
+```json
+{
+  "summary": "本章梗概（80 字内）",
+  "events": [
+    {"story_time": "故事内时间", "location": "地点名",
+     "participants": ["参与者"], "description": "发生了什么",
+     "consequence": "后果"}
+  ],
+  "state_updates": [
+    {"entity": "角色名", "field": "位置", "value": "新值",
+     "evidence": "正文依据"}
+  ],
+  "injury_updates": [
+    {"entity": "受伤者", "name": "损伤名", "kind": "伤势",
+     "severity": "中", "status": "好转", "recov": "恢复方向",
+     "evidence": "正文依据"}
+  ],
+  "deaths": ["本章死亡的角色名"],
+  "entities": [
+    {"name": "实体名", "kind": "人物", "aliases": [],
+     "intro_method": "narrator_intro", "context": "首次出现的句子"}
+  ],
+  "unsupported": ["无引入依据的名词"]
+}
+```
+
+## ★ `state_updates` 的两种写法（**只有这两种合法**）
+
+**写法 A（推荐）**：每条一个对象，`entity` 是**角色名**。
+
+```json
+"state_updates": [
+  {"entity": "林默", "field": "位置", "value": "楼梯间"},
+  {"entity": "林默", "field": "情绪", "value": "恐慌→恐惧"},
+  {"entity": "林默", "field": "装备", "value": "+《住户须知》|来源:口袋"}
+]
+```
+
+**写法 B（紧凑）**：外层键是**角色名**，值是"字段：值"。
+
+```json
+"state_updates": {"林默": "情绪从疲惫变为惊恐"}
+```
+
+⛔ **绝对不要**用字段名当外层键，例如把位置/情绪/装备直接列成外层键：
+
+```text
+"state_updates": { "location": …, "emotion": …, "goal": … }   ← ✗ 错
+```
+
+这样写会让系统把 `location` 当成**角色名**，于是这些状态
+**没有一条挂在真正的角色身上**（实测已发生过：那一章主角是"林默"，
+但 4 条状态全挂在了不存在的实体上）。
+**每条状态必须指明是"谁"的状态。**
+
 ## 抽取原则
 
 1. **只报有变化的内容**。未变化的条目**绝不重复输出**
@@ -89,6 +146,16 @@ ENTITY_RESOLVER_SYSTEM = """你是实体归一器。把本章出现的**实体�
 
 **只输出 JSON**，不要任何解释或代码块标记。
 
+## 输出骨架（字段名照抄）
+
+```json
+{
+  "mentions": ["本章出现的实体名"],
+  "links": {"提及名": 123},
+  "new_canonical": {"提及名": "规范名"}
+}
+```
+
 ## 任务
 
 给定「既有实体清单」与「本章提及列表」：
@@ -112,6 +179,19 @@ ENTITY_RESOLVER_SYSTEM = """你是实体归一器。把本章出现的**实体�
 RELATION_EXTRACTOR_SYSTEM = """你是社会关系抽取器。**只抽人物/势力之间的社会关系**。
 
 **只输出 JSON**，不要任何解释或代码块标记。
+
+## 输出骨架（字段名照抄）
+
+```json
+{
+  "relations": [
+    {"from_entity": "主体名", "to_entity": "客体名", "kind": "盟友",
+     "intensity": 60, "sentiment": "positive", "is_mutual": true,
+     "surface_facing": "世人所知的关系", "true_facing": "真实立场",
+     "evidence": "正文依据"}
+  ]
+}
+```
 
 ## 绝对禁止
 

@@ -40,11 +40,38 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src" / "storyforge"
 
 #: 需要「prompt 带骨架」的节点 → (模块, prompt 常量名, schema 类名)
+#:
+#: ★★ 2026-09-18 扩容（阶段 1 收尾实测）：
+#: 原来只登记 **4 个规划节点**，**漏了 3 个抽取节点** ——
+#: 于是它们长期没有 JSON 骨架，而这个契约测试**对此全绿**。
+#:
+#: 漏检的后果（真实 `write` 崩溃）：
+#:
+#:     StructuredOutputError: 节点 scene_extractor 结构化输出校验失败
+#:     - `state_updates.0`：Input should be an object
+#:
+#: 更危险的一例（**静默**）：
+#:
+#:     "state_updates": {"location": "+楼梯间", "emotion": "恐慌→恐惧"}
+#:
+#: 没有骨架 ⇒ 模型照 prompt 里的散文描述（"位置/境界/目标/情绪/装备等"）
+#: 自造外层键 ⇒ 系统把 `location` 当成**角色名** ⇒ 4 条状态全挂在
+#: 不存在的实体上（那一章主角是"林默"）→ 数据入库、看起来正常、实际全错。
+#:
+#: ★ 这个漏洞本身就是本契约的教训：**"抓不到问题"的契约等于没有**
+#: （与 `_PROMPT_REQUIRED_OPTIONAL` 那条注释同一个道理）。
 STRUCTURED_NODES: tuple[tuple[str, str, str, str], ...] = (
     ("bible_architect", "BIBLE_ARCHITECT_SYSTEM", "BibleOut", "graph/nodes/bible_architect.py"),
     ("volume_planner", "VOLUME_PLANNER_SYSTEM", "SeriesPlanOut", "graph/nodes/volume_planner.py"),
     ("skeleton_planner", "SKELETON_PLANNER_SYSTEM", "SkeletonOut", "graph/nodes/skeleton_planner.py"),
     ("detail_planner", "DETAIL_PLANNER_SYSTEM", "DetailBatchOut", "graph/nodes/detail_planner.py"),
+    # ── 抽取三节点（阶段 1 收尾补入）──
+    ("scene_extractor", "SCENE_EXTRACTOR_SYSTEM", "SceneExtractionOut",
+     "graph/nodes/extractors.py"),
+    ("entity_resolver", "ENTITY_RESOLVER_SYSTEM", "EntityResolutionOut",
+     "graph/nodes/extractors.py"),
+    ("relation_extractor", "RELATION_EXTRACTOR_SYSTEM", "RelationExtractionOut",
+     "graph/nodes/extractors.py"),
 )
 
 #: 骨架里必须出现的字段（schema 必填字段）——由测试动态补全，
@@ -53,6 +80,10 @@ _NESTED_REQUIRED: dict[str, tuple[str, ...]] = {
     "SeriesPlanOut": ("volume_no", "chapter_no"),
     "DetailBatchOut": ("scenes", "goal", "obstacle", "outcome", "why_now"),
     "SkeletonOut": ("arcs", "kind", "segments", "characters", "factions"),
+    # 抽取节点的嵌套必填字段（形状漂移的高发区）
+    "SceneExtractionOut": ("description",),
+    "EntityResolutionOut": ("mentions",),
+    "RelationExtractionOut": ("from_entity", "to_entity", "kind"),
 }
 
 #: ★ **有默认值、但校验器会强制要求**的顶层字段 → 也必须写进 prompt 骨架。
