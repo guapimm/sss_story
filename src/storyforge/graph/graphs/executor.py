@@ -20,7 +20,12 @@ import logging
 from typing import Any
 
 from storyforge.domain.enums import ConfirmPoint, PipelineStage
-from storyforge.graph.graphs.books import GraphDeps, build_all, thread_config
+from storyforge.graph.graphs.books import (
+    BUILTIN_STAGE_GRAPHS,
+    GraphDeps,
+    registered_graph_factories,
+    thread_config,
+)
 from storyforge.orchestrator import WorkItem
 
 logger = logging.getLogger(__name__)
@@ -35,7 +40,8 @@ class GraphUnitExecutor:
 
     def __init__(self, deps: GraphDeps) -> None:
         self.deps = deps
-        self.graphs = build_all(deps)
+        # ★ 内置图 + 模式能力层注册的图（0-5）
+        self.graphs = registered_graph_factories(deps)
 
     def _state_for(self, item: WorkItem) -> dict[str, Any]:
         """把工作单元翻译成图的输入 state。
@@ -58,14 +64,31 @@ class GraphUnitExecutor:
         state.setdefault("refs", {})
         return state
 
-    @staticmethod
-    def _stage_key(stage: PipelineStage) -> str:
-        return {
-            PipelineStage.BIBLE: "bible",
-            PipelineStage.VOLUME_PLAN: "volume_plan",
-            PipelineStage.SKELETON: "skeleton",
-            PipelineStage.DETAIL: "detail",
-        }[stage]
+    def _stage_key(self, stage: PipelineStage) -> str:
+        """`PipelineStage` → 图名。
+
+        ★ 改成查 `BUILTIN_STAGE_GRAPHS`（0-5）—— 原来是本模块内联的
+        4 项 dict，与 `build_all` 的键、`PipelineStage` 枚举**三处手工同步**。
+        `PipelineStage.CHAPTER` 就是这么漏掉的：枚举有、映射没有，
+        而 `orchestrator` 为**全部**枚举值建队列 → 派发即 `KeyError`。
+
+        现在只有**一份**映射（`books.py`），漏项会在
+        `test_stage_graph_map_covers_all_stages` 上直接失败。
+
+        ⚠️ 这里**不是** staticmethod —— 注册图（模式能力层）要查
+        `self.graphs` 才能解析。
+        """
+        if stage in BUILTIN_STAGE_GRAPHS:
+            return BUILTIN_STAGE_GRAPHS[stage]
+        # 注册图（模式能力层）：图名 == 阶段值，由 `register_graphs` 约定
+        if stage.value in self.graphs:
+            return stage.value
+        raise KeyError(
+            f"阶段 {stage.value!r} 没有对应的图。"
+            f"内置图：{sorted(BUILTIN_STAGE_GRAPHS.values())}；"
+            f"已注册：{sorted(self.graphs)}。"
+            f"若是新模式阶段，请用 `register_graphs()` 注册。"
+        )
 
     async def run(self, item: WorkItem) -> Any:
         graph = self.graphs[self._stage_key(item.stage)]

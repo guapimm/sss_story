@@ -653,3 +653,81 @@ async def test_orchestrator_rejected_confirm_fails_only_that_unit(tmp_path) -> N
     assert "拒绝" in (skeleton_item.error or "")
     assert detail_item.status == WorkUnitStatus.DONE, "拒绝只影响该单元"
     assert report["done"] == 1 and report["failed"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# 阶段 ↔ 图的映射完整性（0-5）
+# --------------------------------------------------------------------------- #
+
+
+def test_stage_graph_map_covers_all_stages() -> None:
+    """★ 每个 `PipelineStage` 要么有内置图，要么**显式**被排除。
+
+    这条测试就是为了拦住 `PipelineStage.CHAPTER` 那个缺陷：
+    枚举有、`_stage_key` 没有 → 而 `orchestrator` 为**全部**枚举值建队列
+    → 派发 CHAPTER 单元即 `KeyError`。
+
+    原来映射内联在 `executor._stage_key`，与 `build_all` 的键、
+    枚举本身**三处手工同步**。现在只有一份 `BUILTIN_STAGE_GRAPHS`，
+    本测试断言它 + 排除表 == 全部枚举值。
+    """
+    from storyforge.graph.graphs.books import BUILTIN_STAGE_GRAPHS
+
+    #: 有图但**不在** `build_all` 里（依赖容器不同，见 build_all docstring）
+    separately_owned = {PipelineStage.CHAPTER}
+
+    covered = set(BUILTIN_STAGE_GRAPHS) | separately_owned
+    missing = set(PipelineStage) - covered
+    assert not missing, (
+        f"这些阶段既没有内置图、也没被显式排除：{[s.value for s in missing]}\n"
+        f"派发它们会 KeyError。补图，或加入 `separately_owned` 并说明理由。"
+    )
+    # 反向：映射里不得有枚举外的键
+    assert set(BUILTIN_STAGE_GRAPHS) <= set(PipelineStage)
+
+
+def test_builtin_stage_graph_names_match_build_all() -> None:
+    """★ `BUILTIN_STAGE_GRAPHS` 的值必须与 `build_all` 实际注册的键一致。
+
+    防的是"表里写了、图没建"（映射与注册表漂移）—— 那会让 `_stage_key`
+    返回一个不存在的键，`self.graphs[key]` 再抛 `KeyError`。
+    """
+    from storyforge.graph.graphs.books import BUILTIN_STAGE_GRAPHS
+
+    class _Noop:
+        async def run(self, item):  # pragma: no cover - 只为构造 deps
+            return None
+
+    store = ArtifactStore(tmp_path := __import__("tempfile").mkdtemp())
+    graphs = build_all(GraphDeps(client=_Noop(), store=store))  # type: ignore[arg-type]
+    assert set(graphs) == set(BUILTIN_STAGE_GRAPHS.values()), (
+        f"build_all 注册了 {sorted(graphs)}，"
+        f"但 BUILTIN_STAGE_GRAPHS 声明 {sorted(BUILTIN_STAGE_GRAPHS.values())}"
+    )
+
+
+def test_chapter_stage_raises_clear_error_not_silent() -> None:
+    """★ 派发 `PipelineStage.CHAPTER` 时必须是**清晰报错**，不是静默失败。
+
+    CHAPTER 图（`chapter.py`）依赖 `ChapterDeps`（多一个 `thresholds`），
+    与 `build_all` 的 `GraphDeps` 不是同一套容器，所以**不在**
+    `build_all` 里 —— 由 `cli.py` 的 `write` 直接调用。
+
+    若有人把它当普通工作单元入队，必须得到一条说明**为什么**的错，
+    而不是裸 `KeyError`。
+    """
+    from storyforge.graph.graphs.books import GraphDeps
+
+    class _Noop:
+        async def run(self, item):  # pragma: no cover
+            return None
+
+    store = ArtifactStore(__import__("tempfile").mkdtemp())
+    ex = GraphUnitExecutor(GraphDeps(client=_Noop(), store=store))  # type: ignore[arg-type]
+    item = WorkItem(stage=PipelineStage.CHAPTER, seq=1, volume_no=1, book_id=1)
+
+    with pytest.raises(KeyError) as ei:
+        asyncio.run(ex.run(item))
+    msg = str(ei.value)
+    assert "register_graphs" in msg, "报错必须指向修复办法（注册图）"
+    assert "chapter" in msg

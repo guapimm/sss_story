@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -42,6 +43,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from storyforge.config import get_settings
+from storyforge.domain.enums import PipelineStage
 from storyforge.graph.state import (
     BibleState,
     BookState,
@@ -119,6 +121,24 @@ class GraphDeps:
     def __init__(self, *, client: LLMClient, store: ArtifactStore) -> None:
         self.client = client
         self.store = store
+
+
+#: 内置图名 ↔ `PipelineStage` 的**唯一映射**。
+#:
+#: ★ 为什么把它抽成模块级常量（0-5）：原来有三处各自硬编码
+#: （`build_all` 的键、`executor._stage_key` 的映射、以及 `PipelineStage`
+#: 枚举本身），三者靠人工保持一致 —— 而 `PipelineStage.CHAPTER`
+#: 就是这么漏掉的（枚举有、映射没有 → 派发即 `KeyError`）。
+#: 现在 `build_all`、`_stage_key` 与契约测试都读这一份。
+BUILTIN_STAGE_GRAPHS: dict[PipelineStage, str] = {
+    PipelineStage.BIBLE: "bible",
+    PipelineStage.VOLUME_PLAN: "volume_plan",
+    PipelineStage.SKELETON: "skeleton",
+    PipelineStage.DETAIL: "detail",
+}
+
+#: 内置图名的反查集合（供 `register_graphs` 拒绝覆盖）。
+_BUILTIN_GRAPH_NAMES: frozenset[str] = frozenset(BUILTIN_STAGE_GRAPHS.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -381,13 +401,72 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
 
 
 def build_all(deps: GraphDeps) -> dict[str, CompiledStateGraph]:
-    """构造全部图（供 orchestrator 的执行器按 stage 取用）。"""
+    """构造全部**内置**图（供 orchestrator 的执行器按 stage 取用）。
+
+    ## ★ 这是可注册的扩展点（0-5）
+
+    内置的 4 个图对应 `PipelineStage` 的 BIBLE / VOLUME_PLAN / SKELETON /
+    DETAIL。模式能力层（learn）有自己的阶段词表与图，用
+    `register_graphs()` 注册即可，**不需要改本模块**。
+
+    ⚠️ 本函数**不**包含 `PipelineStage.CHAPTER` —— 单章闭环图
+    （`chapter.py:build_chapter_graph`）需要 `ChapterDeps`，
+    而本函数的 `GraphDeps` 是另一套依赖容器
+    （`ChapterDeps` 还带 `thresholds`）。
+    强塞进来会让两套 deps 混在一个签名里，所以它**不在** `build_all` 里，
+    由 `GraphUnitExecutor` 单独持有（见 `executor.py`）。
+    """
     return {
         "bible": build_bible_graph(deps),
         "volume_plan": build_volume_plan_graph(deps),
         "skeleton": build_skeleton_graph(deps),
         "detail": build_detail_batch_graph(deps),
     }
+
+
+#: 运行期注册的额外图（模式能力层用）。
+#: ⚠️ 存的是**工厂函数**而非编译好的图 —— 图依赖 `deps`，
+#: 而注册发生在拿到 deps 之前。
+_EXTRA_GRAPH_FACTORIES: dict[str, Callable[[GraphDeps], CompiledStateGraph]] = {}
+
+
+def register_graphs(
+    factories: Mapping[str, Callable[[GraphDeps], CompiledStateGraph]],
+) -> None:
+    """注册额外的图（幂等覆盖）。
+
+    模式能力层（learn）在装配时调用：
+
+        register_graphs({"knowledge_research": build_research_graph})
+
+    注册后 `_stage_key` 能解析对应的 `PipelineStage`，
+    `GraphUnitExecutor` 才能派发该阶段的单元。
+
+    ⚠️ 覆盖内置名会**报错** —— 静默覆盖会让"改了哪个图"无从查证。
+    """
+    for name, factory in factories.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"图名必须是非空字符串，收到 {name!r}")
+        if name in _BUILTIN_GRAPH_NAMES:
+            raise ValueError(
+                f"图名 {name!r} 是内置图，不得覆盖（会静默改变流水线行为）"
+            )
+        _EXTRA_GRAPH_FACTORIES[name] = factory
+
+
+def registered_graph_factories(
+    deps: GraphDeps,
+) -> dict[str, CompiledStateGraph]:
+    """内置图 + 注册图，全部编译好。"""
+    out: dict[str, CompiledStateGraph] = build_all(deps)
+    for name, factory in _EXTRA_GRAPH_FACTORIES.items():
+        out[name] = factory(deps)
+    return out
+
+
+def reset_graphs() -> None:
+    """清空运行期注册项 —— **仅供测试隔离使用**。"""
+    _EXTRA_GRAPH_FACTORIES.clear()
 
 
 __all__ = [
@@ -399,5 +478,9 @@ __all__ = [
     "build_skeleton_graph",
     "build_detail_batch_graph",
     "build_all",
+    "BUILTIN_STAGE_GRAPHS",
+    "register_graphs",
+    "registered_graph_factories",
+    "reset_graphs",
     "BookState",
 ]
