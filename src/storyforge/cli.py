@@ -367,6 +367,32 @@ def _artifacts():
     return ArtifactStore.from_settings()
 
 
+def _graph_deps(*, client: Any = None) -> Any:
+    """构造 `GraphDeps` 并**接上仓储**（0-7 的生产接线点）。
+
+    ★ 为什么必须在这里接线：伤势恢复链路的第 ③ 环是"调度器读得到真实伤势"，
+    而它依赖 `GraphDeps.injuries` 非空。若只在测试里赋值，
+    生产链路的 `health_beats_injected` 依然是恒 0 —— 正是修复前的状态。
+
+    数据库不可用时**不阻断**：伤势是增强项（细纲没有它也能生成），
+    但会打印一行说明（不静默降级）。
+    """
+    from storyforge.graph.graphs.books import GraphDeps
+    from storyforge.infra.storage.db import Database
+    from storyforge.infra.storage.repositories import InjuryRepository
+
+    store = _artifacts()
+    injuries = None
+    try:
+        s = get_settings()
+        db = Database.open(s.db_path)
+        injuries = InjuryRepository(db)
+    except Exception as exc:  # noqa: BLE001
+        print(f"（提示：伤势仓储未接线（{type(exc).__name__}: {exc}），"
+              f"本批次不注入恢复节拍）", file=sys.stderr)
+    return GraphDeps(client=client, store=store, injuries=injuries)
+
+
 def _guard_api_key() -> int | None:
     """缺 key 时给出明确指引（返回退出码），否则 `None`。"""
     from storyforge.infra.llm.capability import load_registry
@@ -397,7 +423,7 @@ def _guard_api_key() -> int | None:
 
 
 async def _run_plan(args: argparse.Namespace) -> int:
-    from storyforge.graph.graphs.books import GraphDeps, thread_config
+    from storyforge.graph.graphs.books import thread_config
     from storyforge.graph.graphs.books import (
         build_bible_graph,
         build_detail_batch_graph,
@@ -407,7 +433,8 @@ async def _run_plan(args: argparse.Namespace) -> int:
 
     store = _artifacts()
     client = _make_client()
-    deps = GraphDeps(client=client, store=store)
+    # ★ 0-7：经 `_graph_deps()` 接线仓储（伤势恢复链路的 ③ 环）
+    deps = _graph_deps(client=client)
     s = get_settings()
 
     book_id = args.book_id

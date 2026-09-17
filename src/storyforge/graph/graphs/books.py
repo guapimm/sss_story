@@ -44,6 +44,11 @@ from langgraph.graph.state import CompiledStateGraph
 
 from storyforge.config import get_settings
 from storyforge.domain.enums import PipelineStage
+from storyforge.domain.schedulers.health_scheduler import (
+    HealthSchedule,
+    HealthScheduler,
+)
+from storyforge.infra.storage.repositories.injuries import InjuryRepository
 from storyforge.graph.state import (
     BibleState,
     BookState,
@@ -118,9 +123,19 @@ class GraphDeps:
     这里由调用方（orchestrator 的执行器）构造并传入。
     """
 
-    def __init__(self, *, client: LLMClient, store: ArtifactStore) -> None:
+    def __init__(
+        self,
+        *,
+        client: LLMClient,
+        store: ArtifactStore,
+        injuries: InjuryRepository | None = None,
+    ) -> None:
         self.client = client
         self.store = store
+        #: ★ 0-7：伤势仓储（可选）。为 None 时细纲不注入恢复节拍。
+        #:  可选而非必填的原因：纯文件模式（无 DB）的测试与产物回放
+        #:  不应被迫建库。但**生产链路必须传** —— 否则恢复链路又断在这里。
+        self.injuries = injuries
 
 
 #: 内置图名 ↔ `PipelineStage` 的**唯一映射**。
@@ -139,6 +154,89 @@ BUILTIN_STAGE_GRAPHS: dict[PipelineStage, str] = {
 
 #: 内置图名的反查集合（供 `register_graphs` 拒绝覆盖）。
 _BUILTIN_GRAPH_NAMES: frozenset[str] = frozenset(BUILTIN_STAGE_GRAPHS.values())
+
+
+def build_health_schedule(
+    *,
+    book_id: int,
+    batch_start: int,
+    batch_end: int,
+    repo: InjuryRepository | None,
+) -> HealthSchedule | None:
+    """从**已落库的**伤势算出本批次的恢复节拍（0-7 的接线函数）。
+
+    ★ 为什么必须有这一步（而不是"在调用处少传一个参数"）：
+
+    `build_detail_batch(health_schedule=...)` 的默认值是 `None`，
+    而 `detail_planner.py:672` 是 `if health_schedule is not None` ——
+    于是恢复节拍**永远不注入**（`health_beats_injected` 恒 0）。
+
+    但只补上参数是**不够的**：伤势此前零写入路径（`repositories/` 是空目录），
+    所以传进去的必然是一个空列表，注入数依然是 0。
+    本函数把"读伤势 → 算节拍"这一步显式做出来，
+    并返回 `None` 表示**没有可规划的伤势**（而不是返回空 schedule 假装成功）。
+
+    返回 `None` 的语义（调用方必须区分）：
+      · `repo is None` —— 未接线仓储（无 DB 的场景，如纯文件模式测试）
+      · 库里没有活跃伤势 —— 还没有伤，无需注入
+
+    ★ 注意 `lookahead`：`HealthScheduler` 默认只规划未来 30 章
+    （设计要点 1：后续剧情会变，不一次性铺满全书）。
+    本函数把窗口设为**本批次长度**，与细纲批次边界对齐 ——
+    超出一个批次的节拍没有意义（细纲还没规划到那里）。
+    """
+    if repo is None:
+        return None
+    try:
+        injuries = repo.list_active(book_id)
+    except Exception:  # noqa: BLE001
+        # ★ 读伤势失败**不得**让整批细纲失败 —— 伤势是增强项，不是前置。
+        #   但必须留痕（否则又是"静默降级"，旧项目反复踩的坑）。
+        logger.warning(
+            "读取伤势失败，本批次不注入恢复节拍：book=%d batch=%d~%d",
+            book_id, batch_start, batch_end, exc_info=True,
+        )
+        return None
+    if not injuries:
+        return None
+
+    window = max(1, batch_end - batch_start + 1)
+    sched = HealthScheduler(lookahead=window)
+    return sched.schedule(
+        injuries, from_chapter=batch_start, to_chapter=batch_end
+    )
+
+
+def _mark_heal_planned(
+    deps: GraphDeps,
+    schedule: HealthSchedule | None,
+    *,
+    log_book_id: int,
+) -> None:
+    """把"恢复节拍已排进细纲"写回伤势行（`heal_scene_planned=True`）。
+
+    ★ 这一步补的是**链路最后一环**：`Injury.urgency()` 在
+    `heal_scene_planned=False` 时返回 `None`（不催促）——
+    这是消除旧项目死锁的关键，但若没人置 True，
+    就会从"每章乱催"翻到"**永不催**"，恢复仍然不发生。
+
+    幂等：已经 True 的行重复写无害。
+    失败**不阻断**细纲（节拍已经落盘了），但要留痕。
+    """
+    if schedule is None or not schedule.plans:
+        return
+    if deps.injuries is None:
+        return
+    for injury_id, plan in schedule.plans.items():
+        try:
+            deps.injuries.mark_heal_planned(
+                injury_id, expected_heal_chapter=plan.heal_chapter
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "写回 heal_scene_planned 失败：book=%d injury=%d",
+                log_book_id, injury_id, exc_info=True,
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -320,6 +418,15 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
             return {"lint_issues": [f"全卷台阶里没有第 {volume_no} 卷"]}
 
         bible_text = deps.store.read_text(refs.get("bible_ref", ""))
+        # ★ 0-7 接线：从**已落库的**伤势算恢复节拍。
+        #   此前这一项根本没传（`health_schedule` 默认 None）
+        #   → `attach_health_beats` 永不执行 → `health_beats_injected` 恒 0。
+        health_schedule = build_health_schedule(
+            book_id=book_id,
+            batch_start=int(state["batch_start"]),
+            batch_end=int(state["batch_end"]),
+            repo=deps.injuries,
+        )
         result = await build_detail_batch(
             deps.client,
             book_id=book_id,
@@ -327,6 +434,7 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
             bible_text=bible_text,
             batch_start=int(state["batch_start"]),
             batch_end=int(state["batch_end"]),
+            health_schedule=health_schedule,      # ★ 0-7：此前缺失
             idempotency_key=(
                 f"detail:{book_id}:v{volume_no}:"
                 f"{state['batch_start']}-{state['batch_end']}"
@@ -375,6 +483,14 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
             persist_plan(deps.store, book_id, result.plans[n])
             for n in sorted(result.plans)
         ]
+        # ★ 0-7 收尾：把"恢复节拍已排进细纲"写回伤势行。
+        #
+        # 为什么必须写回：`Injury.urgency()`（`domain/health.py:272`）在
+        # `heal_scene_planned=False` 时**返回 None（不催促）** —— 这是
+        # 消除旧项目死锁的关键设计。但若没人把它置 True，
+        # 则**永远不催促**，恢复照样不会发生（从"每章乱催"翻到"永不催"）。
+        # 节拍已经真的写进 `plans/*.json` 了，此刻置位才是诚实的。
+        _mark_heal_planned(deps, health_schedule, log_book_id=book_id)
         out: dict[str, Any] = {
             "lint_issues": [],
             "detail_refs": new_refs,
@@ -479,6 +595,7 @@ __all__ = [
     "build_detail_batch_graph",
     "build_all",
     "BUILTIN_STAGE_GRAPHS",
+    "build_health_schedule",
     "register_graphs",
     "registered_graph_factories",
     "reset_graphs",
