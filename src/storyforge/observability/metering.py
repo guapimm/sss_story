@@ -55,7 +55,15 @@ _NATIVE_FIELDS = (
 
 #: 上下文来源键 —— 用于 `context_breakdown` 归因
 #: 旧项目 `AGENTS.md` 把逐来源拆分列为北极星指标但从未落实。
-CONTEXT_SOURCES = (
+#:
+#: ⚠️ **这是内置默认集，不是封闭全集。** 模式能力层（learn）需要
+#: 自己的归因键（知识点／例题／教学账本…），用 `register_context_source()`
+#: 注册即可，**不需要改本文件**。
+#:
+#: 历史教训：本元组曾是**封闭**的 —— `ContextBreakdown._check_coverage`
+#: 对表外键直接 `raise ValueError`，于是 learn 首次上报归因就**运行期崩**。
+#: 归因口径仍然唯一（键必须注册过），但扩展不再需要改核心代码。
+CONTEXT_SOURCES: tuple[str, ...] = (
     "system",          # system prompt（旧项目恒 0）
     "bible",           # L0 世界观圣经
     "volume",          # 卷级台阶/目标
@@ -72,6 +80,44 @@ CONTEXT_SOURCES = (
     "instruction",     # 指令/输出要求
     "other",
 )
+
+#: 运行期注册的额外来源键（模式能力层用）。
+#: 用 `frozenset` 语义但保持有序以便诊断输出。
+_EXTRA_CONTEXT_SOURCES: list[str] = []
+
+
+def register_context_source(*keys: str) -> None:
+    """注册额外的上下文归因键（幂等）。
+
+    模式能力层（如 learn 的「知识点」「例题」「教学账本」）在装配时调用：
+
+        register_context_source("knowledge_cards", "research", "ledger")
+
+    注册后 `ContextBreakdown(tokens={"knowledge_cards": 100})` 才被接受。
+    **未注册的键仍然报错** —— 归因口径唯一性没有被放宽，
+    只是不再需要修改核心模块。
+
+    幂等：重复注册同一个键不报错、不产生重复项。
+    """
+    for k in keys:
+        if not isinstance(k, str) or not k.strip():
+            raise ValueError(f"归因键必须是非空字符串，收到 {k!r}")
+        if k not in CONTEXT_SOURCES and k not in _EXTRA_CONTEXT_SOURCES:
+            _EXTRA_CONTEXT_SOURCES.append(k)
+
+
+def registered_context_sources() -> tuple[str, ...]:
+    """当前生效的全部归因键 = 内置默认集 + 运行期注册项。"""
+    return CONTEXT_SOURCES + tuple(_EXTRA_CONTEXT_SOURCES)
+
+
+def reset_context_sources() -> None:
+    """清空运行期注册项 —— **仅供测试隔离使用**。
+
+    生产代码不应调用：归因键一旦注册就应保持稳定，
+    否则历史数据的键会无法解释。
+    """
+    _EXTRA_CONTEXT_SOURCES.clear()
 
 
 class UsageMetrics(BaseModel):
@@ -181,11 +227,15 @@ class ContextBreakdown(BaseModel):
 
     @model_validator(mode="after")
     def _check_coverage(self) -> ContextBreakdown:
-        unknown = set(self.tokens) - set(CONTEXT_SOURCES)
+        # ★ 用 registered_context_sources() 而非 CONTEXT_SOURCES ——
+        #   后者是内置默认集，模式能力层注册的键要能被接受。
+        #   口径唯一性未放宽：**未注册**的键仍然报错。
+        known = set(registered_context_sources())
+        unknown = set(self.tokens) - known
         if unknown:
             raise ValueError(
                 f"未知的上下文来源 {sorted(unknown)}；"
-                f"请加入 CONTEXT_SOURCES（保证归因口径唯一）"
+                f"请用 register_context_source() 注册（保证归因口径唯一）"
             )
         if self.chars and self.total_chars:
             accounted = sum(self.chars.values())
@@ -413,6 +463,9 @@ def breakdown_to_json(b: ContextBreakdown | None) -> str | None:
 
 __all__ = [
     "CONTEXT_SOURCES",
+    "register_context_source",
+    "registered_context_sources",
+    "reset_context_sources",
     "UsageMetrics",
     "ContextBreakdown",
     "LLMCallRecord",

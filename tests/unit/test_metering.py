@@ -191,6 +191,106 @@ def test_context_breakdown_coverage() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 归因键的**可注册扩展点**（0-4）
+# --------------------------------------------------------------------------- #
+
+
+def test_unregistered_source_still_rejected() -> None:
+    """★ 放宽扩展 ⇒ **不得**放宽口径唯一性：未注册的键仍然报错。"""
+    with pytest.raises(ValueError, match="未知的上下文来源"):
+        ContextBreakdown(tokens={"随手编的键": 1})
+
+
+def test_register_context_source_accepts_new_key() -> None:
+    """★ 注册后即可上报 —— 这是 learn 的阻塞点。
+
+    修复前 `CONTEXT_SOURCES` 是**封闭元组**，learn 的 prompt 分层
+    （知识点／例题／公式）没有对应键 → learn 首次上报归因即**运行期崩**
+    （`ValueError`）。模式能力层应当**不需要改核心模块**就能扩展。
+    """
+    from storyforge.observability import (
+        register_context_source,
+        registered_context_sources,
+        reset_context_sources,
+    )
+
+    key = "test_knowledge_cards"
+    try:
+        assert key not in registered_context_sources()
+        register_context_source(key)
+        assert key in registered_context_sources()
+        # 注册后就能建归因对象（修复前这里抛 ValueError）
+        bd = ContextBreakdown(
+            tokens={key: 100, "bible": 50},
+            chars={key: 1200, "bible": 600},
+            total_chars=1800,
+        )
+        assert bd.coverage == pytest.approx(1.0)
+    finally:
+        reset_context_sources()
+    assert key not in registered_context_sources()
+
+
+def test_register_context_source_is_idempotent() -> None:
+    """重复注册不报错、不产生重复项（幂等）。"""
+    from storyforge.observability import (
+        register_context_source,
+        registered_context_sources,
+        reset_context_sources,
+    )
+
+    try:
+        register_context_source("dup_key", "dup_key")
+        register_context_source("dup_key")
+        srcs = registered_context_sources()
+        assert srcs.count("dup_key") == 1
+    finally:
+        reset_context_sources()
+
+
+def test_register_context_source_does_not_shadow_builtin() -> None:
+    """注册一个**已内置**的键不得产生重复项。"""
+    from storyforge.observability import (
+        register_context_source,
+        registered_context_sources,
+        reset_context_sources,
+    )
+
+    try:
+        register_context_source("bible")
+        assert registered_context_sources().count("bible") == 1
+    finally:
+        reset_context_sources()
+
+
+def test_register_context_source_rejects_blank() -> None:
+    """空键/非字符串必须显式拒绝（否则归因表会出现空列）。"""
+    from storyforge.observability import register_context_source
+
+    for bad in ("", "   ", None, 123):
+        with pytest.raises(ValueError, match="归因键必须是非空字符串"):
+            register_context_source(bad)  # type: ignore[arg-type]
+
+
+def test_context_sources_builtin_set_is_preserved() -> None:
+    """★ 内置 15 键必须**原样保留** —— 改的是扩展方式，不是口径。
+
+    这 15 个键是既有口径（`doc/04-数据模型规格.md` 的
+    `context_breakdown` 示例键），动它们会让历史数据无法解释。
+    """
+    from storyforge.observability import CONTEXT_SOURCES, registered_context_sources
+
+    assert isinstance(CONTEXT_SOURCES, tuple)
+    assert len(CONTEXT_SOURCES) == 15
+    for k in ("system", "bible", "volume", "outline", "states", "relations",
+              "injuries", "foreshadow", "timeline", "rag", "previous_chapter",
+              "summary", "style", "instruction", "other"):
+        assert k in CONTEXT_SOURCES, f"内置键 {k} 丢了"
+    # 未注册时，生效集合 == 内置集合
+    assert registered_context_sources() == CONTEXT_SOURCES
+
+
+# --------------------------------------------------------------------------- #
 # 成本按模型（防 model-blind）
 # --------------------------------------------------------------------------- #
 

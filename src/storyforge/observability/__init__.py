@@ -14,6 +14,9 @@ from storyforge.observability.metering import (
     UsageMetrics,
     breakdown_to_json,
     hash_prompt_prefix,
+    register_context_source,
+    registered_context_sources,
+    reset_context_sources,
 )
 from storyforge.observability.report import (
     pricing_table,
@@ -27,6 +30,9 @@ from storyforge.observability.report import (
 
 __all__ = [
     "CONTEXT_SOURCES",
+    "register_context_source",
+    "registered_context_sources",
+    "reset_context_sources",
     "CallCollector",
     "ContextBreakdown",
     "LLMCallRecord",
