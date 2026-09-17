@@ -1,0 +1,17 @@
+# 题材：悬疑灵异
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "suspense"
+name = "悬疑灵异"
+channel = "male"
+tags = ["灵异", "规则怪谈", "刑侦", "盗墓"]
+world_prompt = "以谜题/超自然规则/案件为驱动：信息差与反转是核心；恐怖或诡异氛围需规则自洽，每个怪谈/案件有可被推理的内在逻辑。"
+growth_ladder = "线索链/真相进度为主轴，能力（若有）为辅，成长体现为接近真相与掌控规则。"
+naming = "写实中文名，地名/机构虚构，诡异称号点题。"
+tropes = ["规则怪谈", "副本闯关", "连环案件", "盗墓探险", "民俗禁忌", "解谜反转"]
+reader_expect = "烧脑反转、真相揭露的头皮发麻、以智破局的成就感。"
+tone_examples = ["阴森诡谲", "冷峻推理", "黑色悬疑"]
+flows = ["infinite", "rebirth", "detective", "mystery"]

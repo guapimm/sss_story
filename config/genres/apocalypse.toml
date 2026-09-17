@@ -1,0 +1,17 @@
+# 题材：末世废土
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "apocalypse"
+name = "末世废土"
+channel = "male"
+tags = ["丧尸", "灾变", "生存", "进化"]
+world_prompt = "灾变后秩序崩塌的废土：丧尸/异兽/极端环境/资源匮乏；人性灰度与基地建设并重，威胁等级随主角扩张持续升级。"
+growth_ladder = "进化度/异能阶 + 据点势力规模，资源（食物/弹药/人口）是硬通货。"
+naming = "粗粝写实，绰号与代号多，据点/帮派命名。"
+tropes = ["末日重生", "囤物资", "基地经营", "异能进化", "丧尸潮", "人性考验"]
+reader_expect = "绝境求生、资源掠夺、基地壮大、碾压末世怪物的安全感与爽感。"
+tone_examples = ["紧张窒息", "冷酷生存", "黑色幽默"]
+flows = ["rebirth", "system", "base_build", "infinite", "underdog"]

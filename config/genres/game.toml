@@ -1,0 +1,17 @@
+# 题材：游戏无限
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "game"
+name = "游戏无限"
+channel = "male"
+tags = ["电竞", "无限流", "网游", "虚拟现实"]
+world_prompt = "游戏/副本/无限流世界：规则、数值、技能、副本机制明确且可被利用；玩家/轮回者之间博弈，副本世界观可多元切换。"
+growth_ladder = "等级装备/积分排名 + 副本通关进度，操作与构筑能力是核心。"
+naming = "ID昵称与真名并存，技能/副本命名有游戏感。"
+tropes = ["登录异界", "副本轮回", "职业构筑", "电竞夺冠", "数值碾压", "玩家对抗"]
+reader_expect = "规则利用、神操作、以弱胜强、登顶排行的竞技爽感。"
+tone_examples = ["燃向竞技", "智斗烧脑", "轻松吐槽"]
+flows = ["system", "infinite", "invincible", "underdog"]

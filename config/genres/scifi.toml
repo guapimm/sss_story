@@ -1,0 +1,17 @@
+# 题材：科幻星际
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "scifi"
+name = "科幻星际"
+channel = "male"
+tags = ["星际", "赛博", "机甲", "AI", "星舰", "义体", "虫族", "舰队"]
+world_prompt = "硬科幻或太空歌剧：星际文明、星舰、机甲、赛博空间、AI；科技设定需自洽，文明层级与技术代差构成压迫感与升级空间。"
+growth_ladder = "科技等级/文明层级（行星→恒星→星系…），主角靠技术、舰队或文明权限进阶。"
+naming = "中西混合，含代号、舰名、AI名、外星种族名。"
+tropes = ["文明入侵", "星舰战争", "机械飞升", "赛博义体", "时间悖论", "AI觉醒"]
+reader_expect = "以弱抗强的文明逆袭、技术碾压、探索未知的宏大爽感。"
+tone_examples = ["硬核冷峻", "宏大史诗", "赛博暗黑"]
+flows = ["system", "underdog", "invincible", "infinite", "tech_tycoon"]

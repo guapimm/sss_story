@@ -1,0 +1,125 @@
+# 篇幅档位（scale）—— 权威数据
+#
+# 移植自旧项目 `backend/app/agents/architect.py:scale_spec`。
+# 加载器：`src/storyforge/modes/scales.py`
+#
+# ★ 实测：story 与 learn 的 fast/standard/grand **完全相同**，
+#   只有 ultra 不同（learn 讲知识点拓展路线，story 讲地图/对手扩张）。
+#   故共享档位写在顶层，仅 ultra 分模式写 —— 避免两份重复数据漂移。
+#   相同的档位：grand
+
+# ── 共享档位（两模式相同）──
+
+[grand]
+label = "长文"
+desc = "100~300章 · 卷验证"
+chapters_lo = 100
+chapters_hi = 300
+vols_lo = 1
+vols_hi = 1
+per_vol_lo = 100
+per_vol_hi = 300
+segment = 30
+typical_chapters = 200
+expandable = true
+ending = "divergent"
+rule = "篇幅档位=长文：全书 100~300 章，不分卷（total_volumes=1），本次细化全部章节大纲；须有完整起承转合+阶段性里程碑；【结局发散】末章阶段性收束主线，保留 1~2 条主线钩子/未解之谜，严禁写死最终结局与「全书终」，为「续接扩写」留接口；每章须有钩子推动连载"
+pacing = "节奏配点（全书）：≥3 个 Boss战（beat=boss，注明对手与赌注）、≥3 个爆点（beat=climax）、≥5 个情绪点（beat=emotion，事件驱动）、≥2 个回忆杀（beat=recall）；长期伏笔全书新埋 ≥3 条；末章为阶段性收束章（保留未解悬念，供续接）"
+
+# ── 分模式档位（两模式不同）──
+
+[story.fast]
+label = "超短文"
+desc = "3~10章 · 小规模验证"
+chapters_lo = 3
+chapters_hi = 10
+vols_lo = 1
+vols_hi = 1
+per_vol_lo = 3
+per_vol_hi = 10
+segment = 0
+typical_chapters = 6
+expandable = true
+ending = "divergent"
+rule = "篇幅档位=超短文：总章数 3~10 章，total_volumes=1，节奏紧、冲突早爆发；【结局发散】末章阶段性收束主线冲突+角色成长，保留 1~2 条主线钩子/未解之谜，严禁写死最终结局与「全书终」，为「续接扩写」留接口"
+pacing = "节奏配点：≥1 个高潮章（beat=climax），末章为阶段性收束章（收束主冲突但保留未解悬念，不得宣示终局）"
+
+[learn.fast]
+label = "超短文"
+desc = "3~10章 · 小规模验证"
+chapters_lo = 3
+chapters_hi = 10
+vols_lo = 1
+vols_hi = 1
+per_vol_lo = 3
+per_vol_hi = 10
+segment = 0
+typical_chapters = 6
+expandable = true
+ending = "divergent"
+rule = "篇幅档位=超短文：总章数 3~10 章（按知识点数量定），不分卷（total_volumes=1），每章 3000~4000 字，节奏紧凑直击知识点；【结局发散】最后一章阶段性收束本主题主线冲突+主角成长，但严禁写死最终结局与「全书终」，必须保留 1~2 条主线钩子/未解之谜，为「续接扩写」留接口"
+pacing = "节奏配点：至少 1 个高潮章（beat=climax），且最后一章为「阶段性收束章」（收束本主题冲突+主角蜕变，但保留未解悬念，不得宣示终局）"
+
+[story.standard]
+label = "短文"
+desc = "10~100章 · 验证"
+chapters_lo = 10
+chapters_hi = 100
+vols_lo = 1
+vols_hi = 1
+per_vol_lo = 10
+per_vol_hi = 100
+segment = 0
+typical_chapters = 50
+expandable = true
+ending = "divergent"
+rule = "篇幅档位=短文：本卷 10~100 章，total_volumes=1，完整起承转合，中盘至少一次重大逆转；【结局发散】末章阶段性收束主线冲突+角色成长，保留 1~2 条主线钩子/未解之谜，严禁写死最终结局与「全书终」，为「续接扩写」留接口"
+pacing = "节奏配点：≥1 个 Boss战（beat=boss，注明对手与赌注）、≥2 个情绪点（beat=emotion，事件驱动）、≥1 个爆点（beat=climax）；末章为阶段性收束章（保留未解悬念）"
+
+[learn.standard]
+label = "短文"
+desc = "10~100章 · 验证"
+chapters_lo = 10
+chapters_hi = 100
+vols_lo = 1
+vols_hi = 1
+per_vol_lo = 10
+per_vol_hi = 100
+segment = 0
+typical_chapters = 50
+expandable = true
+ending = "divergent"
+rule = "篇幅档位=短文：总章数 10~100 章，不分卷（total_volumes=1），每章 3000~5000 字，完整起承转合；【结局发散】最后一章阶段性收束主线冲突+主角成长，但保留 1~2 条主线钩子/未解之谜，严禁写死最终结局与「全书终」，为「续接扩写」留接口"
+pacing = "节奏配点：≥1 个 Boss战/大对决（beat=boss，plot 注明对手与赌注）、≥2 个情绪点（beat=emotion，plot 必须注明承接前文哪件事）、≥1 个爆点（beat=climax）；末章为阶段性收束章（保留未解悬念）"
+
+[story.ultra]
+label = "超长文"
+desc = "1000~1700章 · 分卷成品"
+chapters_lo = 1000
+chapters_hi = 1700
+vols_lo = 3
+vols_hi = 6
+per_vol_lo = 300
+per_vol_hi = 500
+segment = 50
+typical_chapters = 400
+expandable = false
+ending = "closed"
+rule = "篇幅档位=超长文：全书 1000~1700 章，每卷 300~500 章，total_volumes 3~6；volumes 数组至少给出 3 卷规划，本次只细化第 1 卷；每卷是一个相对完整的大故事弧并留下跨卷悬念；【终卷·强收束】最终卷必须兑现 ending_promise、伏笔全部回收，这是最终成品（不可续接扩写）"
+pacing = "节奏配点（每卷）：≥3 个 Boss战（beat=boss，华丽多回合，注明对手与逆转点）、≥3 个爆点（beat=climax）、≥5 个情绪点（beat=emotion，事件驱动）、≥2 个回忆杀（beat=recall）；长期伏笔每卷新埋 ≥3 条，贯穿型至少 1 条指向终局；终卷收束段后20%禁埋新伏笔、全部回收"
+
+[learn.ultra]
+label = "超长文"
+desc = "1000~1700章 · 分卷成品"
+chapters_lo = 1000
+chapters_hi = 1700
+vols_lo = 3
+vols_hi = 6
+per_vol_lo = 300
+per_vol_hi = 500
+segment = 50
+typical_chapters = 400
+expandable = false
+ending = "closed"
+rule = "篇幅档位=超长文：全书 1000~1700 章，每卷 300~500 章（具体章数由你根据剧情节奏规划，不要写死），约 3~6 卷，卷数由知识拓展路线决定。本次细化第 1 卷全部章节大纲（300~500章），同时给出后续卷的 {no,title,goal,knowledge_direction} 规划。卷主题须体现知识拓展路线：从核心主题向邻近知识域逐步延伸（如 Python→数据结构→算法→网络→操作系统→分布式），每个新知识域占若干卷并自然融入剧情。首卷为完整大故事弧并留下跨卷悬念；【终卷·强收束】最终卷必须兑现 ending_promise、伏笔全部回收，这是最终成品（不可续接）。每章须有钩子推动连载"
+pacing = "节奏配点（每卷）：≥3 个 Boss战（beat=boss，华丽多回合，注明对手与逆转点）、≥3 个爆点（beat=climax）、≥5 个情绪点（beat=emotion，事件驱动）、≥2 个回忆杀（beat=recall）；长期伏笔每卷新埋 ≥3 条，贯穿型至少 1 条指向终局；终卷收束段后20%禁埋新伏笔、全部回收"

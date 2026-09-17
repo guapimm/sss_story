@@ -1,0 +1,17 @@
+# 题材：青春甜宠
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "youth"
+name = "青春甜宠"
+channel = "female"
+tags = ["校园", "青春", "甜宠"]
+world_prompt = "校园/青春背景：学业、友情、初恋、家庭与自我成长；情绪细腻真实，甜而不腻，冲突符合年龄身份。"
+growth_ladder = "情感关系阶段 + 学业/自我成长，青涩到成熟。"
+naming = "青春感昵称与真名，校园细节真实。"
+tropes = ["同桌的你", "校园暗恋", "双向暗恋", "学霸学渣", "重逢初恋", "成长和解"]
+reader_expect = "青涩心动、高甜撒糖、青春遗憾与治愈。"
+tone_examples = ["清甜治愈", "微酸暗恋", "元气轻松"]
+flows = ["sweet", "rebirth", "strong_heroine"]

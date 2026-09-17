@@ -1,0 +1,17 @@
+# 题材：幻想言情
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "fantasy_romance"
+name = "幻想言情"
+channel = "female"
+tags = ["仙侠言情", "穿越", "女强", "玄幻", "三生三世", "仙魔", "人妖", "宿命"]
+world_prompt = "仙侠/玄幻/异世界外壳包裹情感主线：跨越种族/身份/生死的爱恋，宿命与劫难推动关系，世界观奇幻但情感逻辑真实。"
+growth_ladder = "情感宿命线为主，修为/法力为副，为爱跨越阶位与天命。"
+naming = "唯美东方或西式奇幻名，仙号/精灵名兼具。"
+tropes = ["三生三世", "仙魔之恋", "穿越异世界", "女强升级", "人妖殊途", "天命虐恋"]
+reader_expect = "宿命深情、为爱逆天、虐中带甜的极致浪漫。"
+tone_examples = ["唯美虐恋", "飒爽女强", "奇幻浪漫"]
+flows = ["rebirth", "system", "strong_heroine", "infinite"]

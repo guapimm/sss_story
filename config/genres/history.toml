@@ -1,0 +1,17 @@
+# 题材：历史架空
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "history"
+name = "历史架空"
+channel = "male"
+tags = ["穿越", "争霸", "权谋", "种田"]
+world_prompt = "架空或穿越历史：典章制度、农事工商、军事地理需基本可信；改变历史要有技术/制度阻力，战争与政治博弈逻辑自洽。"
+growth_ladder = "功业/势力规模（部曲→城池→州郡→天下）+ 官职爵位，技术树渐进。"
+naming = "符合时代的姓名与称谓，避讳与礼制讲究。"
+tropes = ["穿越古代", "种田基建", "权谋朝堂", "沙场征战", "改革变法", "群雄逐鹿"]
+reader_expect = "用现代知识降维发展、运筹帷幄、从一隅到天下的功业爽感。"
+tone_examples = ["厚重权谋", "热血争霸", "悠然种田"]
+flows = ["rebirth", "base_build", "business", "underdog"]

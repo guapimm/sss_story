@@ -1,0 +1,17 @@
+# 题材：种田年代
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "idyllic"
+name = "种田年代"
+channel = "female"
+tags = ["种田", "经商", "年代", "基建"]
+world_prompt = "古代乡野或近现代年代：家长里短、发家致富、柴米油盐；生活细节扎实，矛盾多来自邻里亲戚与生计，温馨中见真情。"
+growth_ladder = "家业/生计水平（温饱→小康→富庶）+ 家庭关系和睦度。"
+naming = "接地气姓名，乡土或年代感强，绰号亲切。"
+tropes = ["穿到古代种田", "年代重生", "发家致富", "美食经营", "家长里短", "养娃日常"]
+reader_expect = "勤劳致富的踏实满足、温馨治愈、把日子越过越好的幸福感。"
+tone_examples = ["温馨治愈", "烟火日常", "轻松爽利"]
+flows = ["rebirth", "base_build", "business", "sweet"]

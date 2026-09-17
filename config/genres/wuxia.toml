@@ -1,0 +1,17 @@
+# 题材：武侠江湖
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "wuxia"
+name = "武侠江湖"
+channel = "male"
+tags = ["传统武侠", "江湖", "门派", "武功", "侠客", "恩怨", "秘籍"]
+world_prompt = "无修真飞升的传统江湖：武功招式、门派帮会、官府与绿林、恩怨情仇；武学有境界但不离人体极限与江湖规矩，重侠义和人情世故。"
+growth_ladder = "武学境界 + 江湖声望/门派地位，招式与内功成长可见可感。"
+naming = "古典武侠味，字号、绰号、门派名考究。"
+tropes = ["家破人亡", "拜师学艺", "武林大会", "秘籍争夺", "快意恩仇", "国仇家恨"]
+reader_expect = "侠之大者、武功精进、恩怨了结的江湖豪情。"
+tone_examples = ["苍凉豪迈", "古朴厚重", "浪子洒脱"]
+flows = ["underdog", "rebirth", "invincible", "revenge"]

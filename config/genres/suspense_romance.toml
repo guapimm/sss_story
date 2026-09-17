@@ -1,0 +1,17 @@
+# 题材：悬疑恋爱
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "suspense_romance"
+name = "悬疑恋爱"
+channel = "female"
+tags = ["悬疑", "推理", "情感"]
+world_prompt = "悬疑案件/阴谋与情感线并行：危险关系、身份谜团、并肩查案；每一次反转都同时推动真相与感情。"
+growth_ladder = "真相进度 + 情感信任阶段，疑云渐次揭开。"
+naming = "写实姓名，神秘感气质。"
+tropes = ["危险关系", "并肩破案", "身份之谜", "宿敌变情人", "心理博弈", "阴谋反转"]
+reader_expect = "智性恋张力、并肩生死、信任建立与真相反转的双重满足。"
+tone_examples = ["紧张撩人", "冷峻智性", "暗黑浪漫"]
+flows = ["detective", "mystery", "rebirth", "strong_heroine"]

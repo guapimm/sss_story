@@ -1,0 +1,17 @@
+# 题材：修仙玄幻
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "xianxia"
+name = "修仙玄幻"
+channel = "male"
+tags = ["修真", "境界", "宗门", "灵根", "丹药", "法宝", "秘境", "渡劫", "飞升"]
+world_prompt = "东方修真世界：宗门、功法、灵根、丹药、法宝、秘境并存；境界体系与名称须本书自创自洽，天劫与因果代价真实存在，禁止无代价跳级。"
+growth_ladder = "境界阶梯（如炼气→筑基→金丹…，具体名号本书自创），每阶有明确能力边界与突破代价。"
+naming = "东方古典，姓氏+双字名为主，道号/法号随境界出现。"
+tropes = ["灵根测试", "宗门大比", "夺宝秘境", "渡劫", "师徒传承", "正邪之争"]
+reader_expect = "废柴逆袭、越级杀敌、扮猪吃虎、大道争锋的成长爽感。"
+tone_examples = ["热血升级", "冷峻隐忍", "逍遥洒脱"]
+flows = ["rebirth", "system", "underdog", "invincible", "sect", "immortal_road"]

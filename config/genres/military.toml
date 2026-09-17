@@ -1,0 +1,17 @@
+# 题材：军事体育
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "military"
+name = "军事体育"
+channel = "male"
+tags = ["军旅", "竞技", "战争"]
+world_prompt = "现代军旅/战争/职业体育：专业细节真实（装备、训练、战术、赛制），靠训练、战术与意志取胜，国家荣誉与团队精神为底色。"
+growth_ladder = "军衔/战绩排名 或 联赛级别/个人数据，成长靠硬实力与战绩累积。"
+naming = "写实姓名，部队番号/球队名虚构。"
+tropes = ["新兵入伍", "实战淬炼", "赛场逆转", "保家卫国", "魔鬼训练", "王者归来"]
+reader_expect = "热血燃情、专业碾压、为国争光、绝境翻盘的荣誉感。"
+tone_examples = ["热血硬朗", "专业写实", "励志燃情"]
+flows = ["underdog", "invincible", "rebirth"]

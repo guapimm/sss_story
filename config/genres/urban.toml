@@ -1,0 +1,17 @@
+# 题材：都市异能
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "urban"
+name = "都市异能"
+channel = "male"
+tags = ["都市", "高武", "重生", "商战"]
+world_prompt = "现代都市为底，可叠加隐藏高武/异能/修真界，或纯都市商战职场；金手指融入现实社会规则，权贵、财富、人脉关系要符合现实逻辑。"
+growth_ladder = "财富/社会地位/异能等级三轴并进，能力影响现实身份，避免一步登天脱离社会逻辑。"
+naming = "现代中文名，公司、地名、品牌用虚构名规避现实。"
+tropes = ["重回过去", "隐藏高手", "商战并购", "打脸权贵", "异能觉醒", "神医/兵王回归"]
+reader_expect = "现实压抑后的强势反击、身份揭露打脸、事业版图扩张的爽感。"
+tone_examples = ["爽快凌厉", "腹黑运筹", "市井烟火"]
+flows = ["rebirth", "system", "invincible", "underdog", "face_slap", "business"]

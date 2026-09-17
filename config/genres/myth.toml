@@ -1,0 +1,17 @@
+# 题材：洪荒神话
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "myth"
+name = "洪荒神话"
+channel = "male"
+tags = ["洪荒", "封神", "神话", "量劫", "圣人", "气运", "法宝"]
+world_prompt = "东方神话/洪荒封神体系：圣人、大教、气运、劫数；力量层级宏大（凡→仙→神→圣），因果气运与教派博弈主导格局。"
+growth_ladder = "修为位格 + 气运/教统势力，出手受天道因果约束。"
+naming = "上古神话风，道号、法宝、大阵命名恢宏。"
+tropes = ["穿越洪荒", "斩三尸", "封神量劫", "立教成圣", "法宝争锋", "气运争夺"]
+reader_expect = "与神话人物同台、逆天改命、成就圣人的宏大磅礴感。"
+tone_examples = ["洪荒苍茫", "大气磅礴", "玄妙幽深"]
+flows = ["rebirth", "invincible", "sect", "underdog"]

@@ -1,0 +1,17 @@
+# 题材：古代言情
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "ancient_romance"
+name = "古代言情"
+channel = "female"
+tags = ["宫斗", "宅斗", "权谋", "古言"]
+world_prompt = "古代背景情感+权谋：后宫/世家/朝堂，礼制规矩森严；女主在规矩与权力缝隙中周旋成长，情感与权谋双线交织。"
+growth_ladder = "身份位份/家族地位 + 情感关系阶段，步步为营的处境跃升。"
+naming = "古典雅致，闺名、表字、封号讲究。"
+tropes = ["入宫为妃", "宅斗复仇", "权谋联姻", "女将军", "和亲公主", "帝后情深"]
+reader_expect = "智斗翻盘、情深不悔、于绝境中被偏爱与自我成全。"
+tone_examples = ["端庄权谋", "虐恋揪心", "大气成长"]
+flows = ["rebirth", "strong_heroine", "revenge", "sweet"]

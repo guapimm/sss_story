@@ -1,0 +1,17 @@
+# 题材：纯爱双男主
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "boys_love"
+name = "纯爱双男主"
+channel = "female"
+tags = ["双男主", "纯爱", "双女主", "势均力敌", "破镜重圆", "双向救赎", "身份差"]
+world_prompt = "双男主/双女主情感故事：两位主角形象立体、势均力敌，关系发展是绝对主线，情感细腻、人设张力强，背景可为现代/古代/幻想任意。"
+growth_ladder = "关系阶段（相遇—试探—确认—考验—相守）为唯一主轴。"
+naming = "贴合所选背景时代的命名，双主角名字气质相称。"
+tropes = ["势均力敌", "欢喜冤家", "破镜重圆", "并肩成长", "身份差", "双向救赎"]
+reader_expect = "势均力敌的拉扯、细腻情感、双向救赎与坚定选择。"
+tone_examples = ["温柔治愈", "克制深情", "轻松甜趣"]
+flows = ["sweet", "rebirth", "strong_heroine", "infinite"]

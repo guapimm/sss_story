@@ -1,0 +1,17 @@
+# 题材：现代言情
+#
+# 移植自旧项目 `backend/app/story_genres.py`（权威来源，字段一一对应）。
+# 数据与代码分离：改题材不需要改 Python。
+# 加载器：`src/storyforge/modes/genres.py`
+
+id = "modern_romance"
+name = "现代言情"
+channel = "female"
+tags = ["豪门", "总裁", "职场", "娱乐圈"]
+world_prompt = "现代都市情感：豪门/职场/娱乐圈背景为情感关系服务；人物身份差、误会与推拉构成张力，现实逻辑与情感逻辑并重。"
+growth_ladder = "情感关系阶段（邂逅—拉扯—确认—危机—圆满）为主轴，事业/身份为副线。"
+naming = "现代中文名，男女主名字有记忆点与气质。"
+tropes = ["契约婚姻", "先婚后爱", "破镜重圆", "豪门恩怨", "职场暗恋", "娱乐圈星光"]
+reader_expect = "心动瞬间、双向奔赴、虐后高甜、被坚定选择的情绪价值。"
+tone_examples = ["甜宠轻松", "虐恋情深", "都市轻喜"]
+flows = ["rebirth", "face_slap", "strong_heroine", "sweet"]

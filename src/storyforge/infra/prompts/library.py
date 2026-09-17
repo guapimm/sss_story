@@ -55,12 +55,42 @@ from storyforge.infra.llm.prompt_builder import PromptLayers
 PROMPTS_DIR = REPO_ROOT / "src" / "storyforge" / "infra" / "prompts"
 
 
-def _load(name: str) -> str:
-    """加载 prompt 模板。缺失**抛错**（不静默用空串）。"""
-    p = PROMPTS_DIR / f"{name}.md"
+def _load(name: str, *, pack: str = "") -> str:
+    """加载 prompt 模板。缺失**抛错**（不静默用空串）。
+
+    ## `pack` 参数 = 模式维度（阶段 1 新增）
+
+    ★ 此前本目录是**单一扁平目录、无模式维度** —— 于是 learn 的
+    `writer_system.md` **无处安放**（会与 story 的撞名）。
+    这是 learn 的 prompt 能否落地的**单点前提**。
+
+    现在：
+
+        pack=""        → `prompts/writer_system.md`（story，**既有路径零改动**）
+        pack="learn"   → `prompts/learn/writer_system.md`
+
+    依据：`modes.PromptPack.dir_name`（story 是 `""`，learn 是 `"learn"`）——
+    与 `doc/01-总体架构.md:394-397` 的 `PromptPack` Protocol 对齐。
+
+    ⚠️ `pack` 指向的**子目录不存在**时也抛错（不静默回落 story 的模板）：
+    回落会让 learn 悄悄沿用"对话占比 ≥25%、比喻要少"的散文规范，
+    而教学章"不要对话、比喻是教学手段"是正确写法 —— 静默回落
+    比报错危险得多。
+    """
+    base = PROMPTS_DIR / pack if pack else PROMPTS_DIR
+    p = base / f"{name}.md"
     if not p.exists():
+        where = f"（pack={pack!r}）" if pack else ""
+        extra = ""
+        if pack and not base.exists():
+            extra = (
+                f"\n★ pack 子目录不存在：{base} —— "
+                f"这是新模式尚未提供自己 prompt 的信号，"
+                f"**不得**静默回落到默认 pack（会沿用错误的写作规范）"
+            )
         raise FileNotFoundError(
-            f"prompt 模板缺失：{p}（prompt 必须集中管理，见本模块 docstring）"
+            f"prompt 模板缺失：{p}{where}"
+            f"（prompt 必须集中管理，见本模块 docstring）{extra}"
         )
     return p.read_text(encoding="utf-8").strip()
 
@@ -356,6 +386,7 @@ def build_chapter_layers(
     min_chars: int,
     soft_max: int,
     style_rules: str = "",
+    pack: str = "",
 ) -> PromptLayers:
     """组装一章的三层 prompt。
 
@@ -363,10 +394,13 @@ def build_chapter_layers(
       · `stable`  = system 角色定义 + 输出格式约束 + 世界观圣经
       · `semi`    = 本卷台阶 + 本段目标 + 文风规则（固定文本）
       · `volatile`= 状态/关系/损伤/时间线/RAG/前文/锚点/细纲/节拍/钩子/**字数**
+
+    `pack`（阶段 1 新增）选哪套 prompt 模板 —— 见 `_load` 的说明。
+    story 传 `""`（既有行为零改动），learn 传 `"learn"`。
     """
     layers = PromptLayers()
     # ① 稳定前缀
-    layers.stable.add("system", _load("writer_system"))
+    layers.stable.add("system", _load("writer_system", pack=pack))
     layers.stable.add("bible", bible_block(bible_text))
     # ② 准稳定层
     layers.semi.add("volume", volume_block_text)
