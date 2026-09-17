@@ -26,7 +26,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent   # scripts/ -> 仓库根
 SRC = ROOT / "src" / "storyforge"
 PROBE = SRC / "_zz_mode_probe.py"
 

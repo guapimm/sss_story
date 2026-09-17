@@ -116,6 +116,39 @@ OPEN_TEASER_ENDINGS: tuple[str, ...] = (
     "蠢蠢欲动", "暗流", "山雨欲来", "风暴", "正在酝酿", "慢慢往外", "往外顶",
 )
 
+#: AI 画面收尾（角色微笑 / 望远方等）—— 逐条抄录旧项目
+#: `style_metrics.py:52` 的 `AI_SCENE_ENDINGS`。
+#:
+#: ## ★ 为什么是**独立信号**，不并入 `classify_ending` 的 summary
+#:
+#: 旧项目里两者用途不同：
+#:   · `classify_ending`（← `prose_style.ending_pattern`）是**分布分类** ——
+#:     统计章末形态，golden 基线 = `mid_action 23 / other 21 / omen 2 /
+#:     dialogue 1 / summary 0 / time_skip 0`
+#:   · 本表是 `needs_rewrite` 的**独立触发器**（`style_metrics.py:131`）
+#:
+#: 合并会让「AI 画面收尾」与「总结式收尾」混成一个类别，
+#: 且 golden 基线的 `summary == 0` 就不再等于"总结式结尾为零"。
+#:
+#: ## 只看**结尾 60 字**（与旧项目同口径）
+#:
+#: 旧项目注释原文：「AI 画面收尾只看结尾 60 字（避免中间合法
+#: 『望向/嘴角』误报）」。中段出现"嘴角"是**合法的正常描写**。
+#:
+#: ## 实测（`scripts/diag_ai_scene.py`）
+#:
+#: 全语料 254 章命中 **2 章（0.79%）** —— 触发率低但判定准确
+#: （书 8 第 117 章「目光深邃」、第 15 章「嘴角/弧度」，均为真·AI 画面收尾）。
+#: 与 `CLICHES`（52 条套话表）**仅重叠 3/8**，
+#: `勾起嘴角`/`望向远方`/`望向天际`/`目光坚定`/`目光深邃` 是新增信息量。
+AI_SCENE_ENDINGS: tuple[str, ...] = (
+    "嘴角", "弧度", "微微一笑", "勾起嘴角",
+    "望向远方", "望向天际", "目光坚定", "目光深邃",
+)
+
+#: 画面收尾的观察窗口（字）—— 旧项目 `style_metrics.py:131` 同值
+AI_SCENE_WINDOW = 60
+
 #: 动作动词收束（仍是推进拍，不是总结/预兆/时间跳跃）—— 抄录旧项目 `_ACTION_TAIL`
 ACTION_TAIL: tuple[str, ...] = (
     "冲", "扑", "抓", "抬", "推", "拉", "转身", "迈步", "踏", "握", "收紧", "退", "迎",
@@ -433,6 +466,25 @@ def classify_ending(text: str, *, window: int = 60) -> EndingPattern:
     return EndingPattern.OTHER
 
 
+def has_ai_scene_ending(text: str) -> bool:
+    """章末是否落在「AI 画面收尾」上（角色微笑 / 望远方）。
+
+    ★ **只看结尾 `AI_SCENE_WINDOW`（60）字** —— 与旧项目
+    `style_metrics.py:131` 同口径。中段出现"嘴角/望向"是**合法的正常描写**，
+    不该被当成 AI 味（旧项目注释明确记载了这个误报风险）。
+
+    这是 `needs_rewrite` 的**独立触发器**，不参与 `classify_ending` 的
+    章末分类（语义分离理由见 `AI_SCENE_ENDINGS` 的文档）。
+
+    实测触发率 0.79%（全语料 254 章命中 2 章）—— 低，但判定准确。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    tail = raw[-AI_SCENE_WINDOW:]
+    return any(w in tail for w in AI_SCENE_ENDINGS)
+
+
 def find_cliches(text: str) -> list[str]:
     """套话命中（去重，保留首次出现顺序）。"""
     seen: list[str] = []
@@ -517,6 +569,8 @@ class LiteralMetrics:
     prev_chapters_used: int = 0
     triple_parallelism: int = 0
     ending: EndingPattern = EndingPattern.OTHER
+    #: AI 画面收尾（角色微笑/望远方）—— 只看结尾 60 字，独立于 `ending`
+    ai_scene_ending: bool = False
     cliches: list[str] = field(default_factory=list)
     strong_emotion_words: int = 0
     simile_count: int = 0
@@ -535,6 +589,7 @@ class LiteralMetrics:
             "prev_chapters_used": self.prev_chapters_used,
             "triple_parallelism": self.triple_parallelism,
             "ending": self.ending.value,
+            "ai_scene_ending": self.ai_scene_ending,
             "cliches": list(self.cliches),
             "strong_emotion_words": self.strong_emotion_words,
             "simile_count": self.simile_count,
@@ -570,6 +625,7 @@ def analyze(
         prev_chapters_used=len(prev_texts or []),
         triple_parallelism=triple_parallelism_count(raw),
         ending=classify_ending(raw),
+        ai_scene_ending=has_ai_scene_ending(raw),
         cliches=find_cliches(raw),
         strong_emotion_words=count_strong_emotion_words(raw),
         simile_count=simile_count(raw),
@@ -612,6 +668,8 @@ __all__ = [
     "CLICHES",
     "SUMMARY_ENDINGS",
     "AI_SCENE_ENDINGS",
+    "AI_SCENE_WINDOW",
+    "has_ai_scene_ending",
     "OPEN_TEASER_ENDINGS",
     "BRIDGE_BREAK_WORDS",
     "STRONG_EMOTION_WORDS",

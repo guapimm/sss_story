@@ -550,6 +550,7 @@ class TriggerReason(StrEnum):
     STATE_CONFLICT = "state_conflict"      # 状态矛盾
     UNSUPPORTED_ENTITY = "unsupported_entity"  # 无依据新名词
     ENDING_OMEN = "ending_omen"            # 假钩子（贴片式无主暗示）
+    AI_SCENE_ENDING = "ai_scene_ending"    # AI 画面收尾（微笑/望远方，只看末 60 字）
     BRIDGE_BREAK = "bridge_break"          # 章首时间硬切
     TOO_SHORT = "too_short"                # 字数不足
 

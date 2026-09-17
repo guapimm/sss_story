@@ -425,6 +425,11 @@ def collect_triggers(
         triggers.append(TriggerReason.BRIDGE_BREAK)
     if lit.ending in (EndingPattern.OMEN, EndingPattern.TIME_SKIP):
         triggers.append(TriggerReason.ENDING_OMEN)
+    # ★ AI 画面收尾（角色微笑/望远方）—— 独立信号，**不是** `ending` 的子类。
+    #   旧项目接在 `needs_rewrite` 上（`style_metrics.py:131`），只看末 60 字。
+    #   实测触发率 0.79%（全语料 254 章命中 2 章），判定准确。
+    if lit.ai_scene_ending:
+        triggers.append(TriggerReason.AI_SCENE_ENDING)
 
     if st is not None:
         if st.outline_adherence is not None and st.outline_adherence < th.hard_outline_adherence:

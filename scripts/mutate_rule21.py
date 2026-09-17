@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent   # scripts/ -> 仓库根
 TARGET = ROOT / "src/storyforge/infra/llm/client.py"
 GOOD = "        provider: ProviderSpec,\n"
 BAD = "        provider: ProviderCapability,\n"
