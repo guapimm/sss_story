@@ -72,6 +72,16 @@ STRUCTURED_NODES: tuple[tuple[str, str, str, str], ...] = (
      "graph/nodes/extractors.py"),
     ("relation_extractor", "RELATION_EXTRACTOR_SYSTEM", "RelationExtractionOut",
      "graph/nodes/extractors.py"),
+    # ── learn 规划三节点（阶段 2-3）──
+    # ★ 这次是**主动登记**的：缺陷 11 的根因正是"契约漏登记抽取节点"
+    # （设计完 prompt 却没进 STRUCTURED_NODES → 长期无骨架而契约全绿）。
+    # 新增任何带 JSON 输出的节点都必须同时登记到这里。
+    ("learning_map", "LEARNING_MAP_SYSTEM", "LearningMapOut",
+     "infra/llm/learning_schemas.py"),
+    ("learning_gap_check", "GAP_CHECK_SYSTEM", "GapCheckOut",
+     "infra/llm/learning_schemas.py"),
+    ("term_mapping", "MAPPING_SYSTEM", "TermMappingBatchOut",
+     "infra/llm/learning_schemas.py"),
 )
 
 #: 骨架里必须出现的字段（schema 必填字段）——由测试动态补全，
@@ -108,6 +118,41 @@ def _read(rel: str) -> str:
     return (SRC_ROOT / rel).read_text(encoding="utf-8")
 
 
+#: schema 定义**按职责分布在三个模块**（不是一个门面）：
+#:
+#:     schemas.py              规划期（圣经/台阶/骨架/细纲/审校）
+#:     extraction_schemas.py   抽取期（正文 → 结构化事实）
+#:     learning_schemas.py     learn 规划期（学习地图/平替修辞）
+#:
+#: ★ 为什么契约要**跨模块解析**而不是要求"全都在 schemas.py"：
+#: `schemas.py` 已 791/800 行，物理上放不下 —— 而契约规则 10
+#: 是**为旧项目 `pipeline.py` 8,607 行立的**，撞限时该拆文件、不该放宽。
+#: 三个模块的拆分依据都是**职责**（已在本文件与各模块 docstring 记录）。
+#:
+#: ⚠️ 早期版本用 `getattr(schemas, name)` 单点解析 —— 那会让
+#: "把 schema 挪到职责更合适的模块"这件事**被契约挡住**，
+#: 变相鼓励往 `schemas.py` 里硬塞。
+_SCHEMA_MODULES: tuple[str, ...] = (
+    "storyforge.infra.llm.schemas",
+    "storyforge.infra.llm.extraction_schemas",
+    "storyforge.infra.llm.learning_schemas",
+)
+
+
+def _resolve_schema(schema_name: str):
+    """在三个 schema 模块里找该类；找不到则**明确报错**（不静默）。"""
+    import importlib
+
+    for mod_name in _SCHEMA_MODULES:
+        mod = importlib.import_module(mod_name)
+        if hasattr(mod, schema_name):
+            return getattr(mod, schema_name)
+    raise AssertionError(
+        f"在 {list(_SCHEMA_MODULES)} 里都找不到 schema {schema_name!r} —— "
+        f"登记的名字可能拼错了（那会让这条契约形同虚设）"
+    )
+
+
 def _prompt_constant(rel: str, const: str) -> str:
     tree = ast.parse(_read(rel))
     for node in ast.walk(tree):
@@ -139,9 +184,7 @@ def test_skeleton_names_match_schema_fields(node, const, schema_name, rel) -> No
     防的是"骨架自己写错了" —— 那比没有骨架更糟：模型会照着一个
     不存在的字段名输出，然后必然校验失败。
     """
-    import storyforge.infra.llm.schemas as S
-
-    schema = getattr(S, schema_name)
+    schema = _resolve_schema(schema_name)
     valid = set(schema.model_fields)
     # 嵌套模型的字段也要算合法
     for f in schema.model_fields.values():
@@ -168,9 +211,7 @@ def test_skeleton_covers_all_required_top_level_fields(node, const, schema_name,
 
     漏写的字段模型很可能就不给 —— 而它们是必填，缺一个就整轮失败。
     """
-    import storyforge.infra.llm.schemas as S
-
-    schema = getattr(S, schema_name)
+    schema = _resolve_schema(schema_name)
     required = {
         name for name, f in schema.model_fields.items() if f.is_required()
     }
@@ -203,9 +244,7 @@ def test_skeleton_covers_validator_enforced_optional_fields(
     want = _PROMPT_REQUIRED_OPTIONAL.get(schema_name, ())
     if not want:
         pytest.skip(f"{schema_name} 未登记'校验器强制的可选字段'")
-    import storyforge.infra.llm.schemas as S
-
-    schema = getattr(S, schema_name)
+    schema = _resolve_schema(schema_name)
     # 登记的名字必须真在 schema 里（防登记笔误让本条形同虚设）
     unknown = [w for w in want if w not in schema.model_fields]
     assert not unknown, f"登记了 schema 里不存在的字段：{unknown}"

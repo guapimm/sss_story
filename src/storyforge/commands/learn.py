@@ -242,6 +242,8 @@ def add_learn_subparsers(sub) -> None:
     lm.add_argument("--replacement", default="", help="edit：新的世界内说法")
     lm.add_argument("--revision", type=int, default=0, help="rollback：回退到第几版")
     lm.add_argument("--force", action="store_true", help="accept：跳过校验")
+    lm.add_argument("--offline", action="store_true",
+                    help="gen：强制离线路径（种子 + 启发式切分，不调 LLM）")
     lm.add_argument("--verbose", "-v", action="store_true",
                     help="show/ledger：多打明细")
     # ── 阶段 2-4：教学账本（艾宾浩斯）──

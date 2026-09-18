@@ -289,12 +289,21 @@ class ResearchSettings(BaseModel):
     #: （`chapter_count = max(mini, min(cap, points_count * 4))`），
     #: 即**约 4 章讲 1 个知识点**。此处反推目标点数，
     #: 使"篇幅 ↔ 知识点"两端一致。
+    #:
+    #: ★★ 上限必须 ≤ 学习地图的**容量**（`graph/nodes/learning.py:SCALE_PROFILE`
+    #: 的 `模块数上限 × 每模块点数`），否则会出现"搜了一堆但地图装不下"
+    #: → 资料浪费，或模型为塞进地图而删减内容。
+    #:
+    #: 实测修正（被 `test_scale_profile_covers_research_target` 抓到）：
+    #: ultra 原定 150，但 `RESEARCH_PROFILE` 的 ultra 是
+    #: **10~14 模块 × 10 点 = 容量 140** → 150 > 140 **装不下**。
+    #: 现按容量上限对齐为 140（不是把容量改大 —— 那是旧项目已验证的规模）。
     points_per_scale: dict[str, int] = Field(
         default_factory=lambda: {
-            "fast": 8,
-            "standard": 25,
-            "grand": 60,
-            "ultra": 150,
+            "fast": 8,          # 容量 12（2~3 模块 × 4）
+            "standard": 25,     # 容量 30（3~5 × 6）
+            "grand": 60,        # 容量 80（6~10 × 8）
+            "ultra": 140,       # 容量 140（10~14 × 10）—— 取满
         }
     )
 

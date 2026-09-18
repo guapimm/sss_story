@@ -42,6 +42,7 @@ class _Args:
         self.revision = kw.pop("revision", 0)
         self.force = kw.pop("force", False)
         self.verbose = kw.pop("verbose", False)
+        self.offline = kw.pop("offline", False)      # gen：强制离线路径
         # 阶段 2-4：教学账本
         self.chapter = kw.pop("chapter", 0)
         self.point_ids = kw.pop("point_ids", None)
