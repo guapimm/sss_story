@@ -160,12 +160,117 @@ def cmd_learn_map(args: argparse.Namespace) -> int:
         "reject": _do_reject,
         "rollback": _do_rollback,
         "history": _do_history,
+        # 阶段 2-4：教学账本（艾宾浩斯）
+        "ledger": _do_ledger,
+        "teach": _do_teach,
+        "due": _do_due,
     }
     if action not in handlers:
-        print("需要子命令：gen/show/accept/edit/reject/rollback/history",
-              file=sys.stderr)
+        print("需要子命令：gen/show/accept/edit/reject/rollback/history/"
+              "ledger/teach/due", file=sys.stderr)
         return 2
     return handlers[action](args)
+
+
+# --------------------------------------------------------------------------- #
+# 教学账本（阶段 2-4）—— 艾宾浩斯复习调度
+# --------------------------------------------------------------------------- #
+
+
+def _load_ledger(store: ArtifactStore, book_id: int):
+    """读账本；不存在则返回空账本（首次使用**不是错误**）。"""
+    from storyforge.domain.teaching import DEFAULT_INTERVALS, TeachingLedger
+
+    ref = ArtifactStore.teaching_ledger_key(book_id)
+    if not store.exists(ref):
+        return TeachingLedger(intervals=DEFAULT_INTERVALS)
+    try:
+        raw = json.loads(store.read_text(ref))
+    except (ArtifactNotFound, ValueError):
+        return TeachingLedger(intervals=DEFAULT_INTERVALS)
+    return TeachingLedger.from_dict(raw)
+
+
+def _save_ledger(store: ArtifactStore, book_id: int, ledger) -> None:
+    store.write_json(ArtifactStore.teaching_ledger_key(book_id), ledger.to_dict())
+
+
+def _do_ledger(args: argparse.Namespace) -> int:
+    """查看教学账本（**可视化**：三态计数 + 逐点进度）。"""
+    store = _store()
+    ledger = _load_ledger(store, args.book_id)
+
+    print("=" * 78)
+    print(f"教学账本 · 书 {args.book_id}（艾宾浩斯复习调度）")
+    print("=" * 78)
+    print(f"复习间隔（章）：{list(ledger.intervals)}"
+          f"    走完全部间隔 = 毕业")
+    st = ledger.stats()
+    print()
+    print(f"知识点总数 {st['total']}")
+    print(f"  未讲授  {st['未讲授']:>3}")
+    print(f"  已讲授  {st['已讲授']:>3}（在复习周期内）")
+    print(f"  已复用  {st['已复用']:>3}（**已毕业**，不再复习）")
+    print(f"  累计顺延 {st['deferred_total']}")
+
+    if args.verbose and ledger.records:
+        print()
+        print("── 逐点进度 ──")
+        for pid, r in sorted(ledger.records.items(),
+                             key=lambda kv: kv[1].next_review_chapter or 10**9):
+            nxt = r.next_review_chapter if r.next_review_chapter is not None else "—"
+            print(f"  {pid:<12} {r.status.value:<4} "
+                  f"讲授@{r.taught_chapter:<4} 复习{r.review_count}次 "
+                  f"下次@{nxt} 顺延{r.deferred_count}")
+    else:
+        print()
+        print("逐点进度：`learn-map ledger --book-id N -v`")
+    return 0
+
+
+def _do_teach(args: argparse.Namespace) -> int:
+    """记录"本章讲授了哪些知识点" → 排第一次复习。
+
+    ★ 这是账本的**写入入口**：真实链路里由 write 节点调用，
+    此处暴露给 CLI 以便**可视化验证**（用户要求"避免黑盒"）。
+    """
+    store = _store()
+    ledger = _load_ledger(store, args.book_id)
+    if not args.point_ids:
+        print("需要 --point-ids（要记入讲授的知识点 id）", file=sys.stderr)
+        return 2
+    for pid in args.point_ids:
+        ledger.record_taught(pid, args.chapter)
+    _save_ledger(store, args.book_id, ledger)
+    print(f"✓ 第 {args.chapter} 章讲授 {len(args.point_ids)} 个知识点")
+    for pid in args.point_ids:
+        r = ledger.get(pid)
+        print(f"    {pid:<12} 下次复习 @第 {r.next_review_chapter} 章")
+    return 0
+
+
+def _do_due(args: argparse.Namespace) -> int:
+    """查某章应复习哪些知识点（**到期挑选的三条规则都生效**）。"""
+    from storyforge.domain.teaching import REVIEW_EXCLUDED_BEATS
+
+    store = _store()
+    ledger = _load_ledger(store, args.book_id)
+    picked = ledger.due_reviews(
+        args.chapter, beat=args.beat, has_new_points=args.has_new_points
+    )
+    if args.beat.lower() in REVIEW_EXCLUDED_BEATS:
+        print(f"第 {args.chapter} 章是「{args.beat}」章 —— "
+              f"**不注入复习**（避免打断场面；移植自旧项目的设计）")
+        return 0
+    if not picked:
+        print(f"第 {args.chapter} 章无到期复习点")
+        return 0
+    print(f"第 {args.chapter} 章应复习 {len(picked)} 个"
+          f"（最紧急优先；有新知识点时上限 1 个）：")
+    for r in picked:
+        print(f"    {r.point_id:<12} 第 {r.review_count + 1} 次复习"
+              f"（原排期 @第 {r.next_review_chapter} 章）")
+    return 0
 
 
 # -- gen --------------------------------------------------------------------

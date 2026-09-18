@@ -177,6 +177,18 @@ class ArtifactStore:
             f"books/{book_id}/learning/history/map_{revision:03d}.json"
         )
 
+    @staticmethod
+    def teaching_ledger_key(book_id: int) -> ArtifactRef:
+        """教学账本（艾宾浩斯复习进度，阶段 2-4）。
+
+        与学习地图同放 `learning/` 下（learn 产物物理隔开，低耦合）。
+
+        ★ **分开存**而不是塞进 `map.json`：两者更新频率差很远 ——
+        地图在确认阶段改几次就定了，账本**每章都在变**。
+        混在一起会让"重看地图"必须连带写一次账本。
+        """
+        return ArtifactRef(f"books/{book_id}/learning/ledger.json")
+
     # -- 文本 ---------------------------------------------------------------
 
     def write_text(self, ref: ArtifactRef | str, text: str) -> ArtifactRef:

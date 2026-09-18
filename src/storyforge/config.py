@@ -308,6 +308,37 @@ class ResearchSettings(BaseModel):
     max_attempts: int = 3
 
 
+class TeachingSettings(BaseModel):
+    """教学进度调度配置（learn 专属，阶段 2-4）。
+
+    ## 间隔表的单位是「章」不是「天」
+
+    这是**小说**：读者的"遗忘曲线"由**阅读进度**决定，不是墙钟时间。
+    旧项目 `config.py:120` 用 `REVIEW_INTERVALS="3,7,15,30"`（章）是对的，
+    本项目沿用。
+    """
+
+    #: 艾宾浩斯复习间隔（章）。逐字来自旧项目 `REVIEW_INTERVALS="3,7,15,30"`。
+    #:
+    #: ★ 走完全部间隔 = **毕业**（状态转 `已复用`，不再挑中）。
+    #: 故数组长度 = 总复习次数。
+    intervals: list[int] = Field(default_factory=lambda: [3, 7, 15, 30])
+
+    #: 顺延延迟（章）—— 本章没自然用上时推后多少章。
+    #: 旧项目 `defer_reviews(..., delay=2)` 同值。
+    defer_delay: int = 2
+
+    #: 无新知识点时每章最多塞几个复习点。
+    #: 旧项目 `cap = 1 if has_new_points else min(limit, 3)`。
+    max_reviews_per_chapter: int = 3
+
+    #: 不注入复习的节拍类型 —— 「高潮/Boss/情绪章不注入，避免打断场面」
+    #: （旧项目 `pick_due_reviews` 的 `beat in ("boss","climax","emotion")`）
+    excluded_beats: list[str] = Field(
+        default_factory=lambda: ["boss", "climax", "emotion"]
+    )
+
+
 class Settings(BaseSettings):
     """全局配置。所有模块通过 `get_settings()` 获取，不得直读环境变量。"""
 
@@ -337,6 +368,7 @@ class Settings(BaseSettings):
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     research: ResearchSettings = Field(default_factory=ResearchSettings)
+    teaching: TeachingSettings = Field(default_factory=TeachingSettings)
 
     @property
     def db_path(self) -> Path:

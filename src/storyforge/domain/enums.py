@@ -501,6 +501,33 @@ assert not (STORY_CONFIRMS & LEARN_CONFIRMS), (
 assert STORY_CONFIRMS | LEARN_CONFIRMS == set(ConfirmPoint)
 
 
+class TeachingStatus(StrEnum):
+    """知识点教学生命周期（三态）—— learn 阶段 2-4。
+
+    ## 为什么必须有第三态（本项目此前缺的）
+
+    旧项目 `KnowledgeLedger.status` 有 **`未讲授 / 已讲授 / 已复用`** 三态，
+    而本项目阶段 1 的 `modes/protocols.py:TeachingRecord` 只有
+    `point_id / taught_chapter / review_count / next_review_chapter` ——
+    **缺"毕业"**。
+
+    不补的后果：`next_review_chapter=None` 既表示"已毕业"也表示"尚未排期"，
+    两者无法区分 → **毕业的知识点会被反复挑中复习**。
+
+    ## 三态的转换（由 `domain/teaching.py:TeachingLedger` 驱动）
+
+        UNTAUGHT --record_taught--> TAUGHT --advance×len(intervals)--> MASTERED
+
+    其中 `advance` 只在**复习点真正出现在正文里**时调用
+    （移植旧项目 `advance_reviews` 的 `used` 判定）。
+    """
+
+    UNTAUGHT = "未讲授"
+    TAUGHT = "已讲授"
+    #: 复习轮次走完全部间隔 —— **毕业**，不再被挑中
+    MASTERED = "已复用"
+
+
 class HealthAction(StrEnum):
     """伤势节拍动作（对策④）—— 恢复必须由**细纲场景**承载。"""
 
@@ -637,6 +664,7 @@ __all__ = [
     "CONDITIONAL_CONFIRMS",
     "LEARN_CONFIRMS",
     "STORY_CONFIRMS",
+    "TeachingStatus",
     "HealthAction",
     "GateErrorCode",
     "LocationLevel",

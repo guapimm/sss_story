@@ -225,9 +225,11 @@ def add_learn_subparsers(sub) -> None:
     )
     lm.add_argument(
         "action",
-        choices=["gen", "show", "accept", "edit", "reject", "rollback", "history"],
+        choices=["gen", "show", "accept", "edit", "reject", "rollback", "history",
+                 "ledger", "teach", "due"],
         help="gen 生成 / show 查看 / accept 确认 / edit 改 / reject 标重做 / "
-             "rollback 回退 / history 历史",
+             "rollback 回退 / history 历史 / "
+             "ledger 教学账本 / teach 记录讲授 / due 查到期复习",
     )
     lm.add_argument("--book-id", type=int, required=True)
     lm.add_argument("--topic", default="", help="研究主题（gen 用）")
@@ -240,7 +242,17 @@ def add_learn_subparsers(sub) -> None:
     lm.add_argument("--replacement", default="", help="edit：新的世界内说法")
     lm.add_argument("--revision", type=int, default=0, help="rollback：回退到第几版")
     lm.add_argument("--force", action="store_true", help="accept：跳过校验")
-    lm.add_argument("--verbose", "-v", action="store_true", help="show：多打摘要")
+    lm.add_argument("--verbose", "-v", action="store_true",
+                    help="show/ledger：多打明细")
+    # ── 阶段 2-4：教学账本（艾宾浩斯）──
+    lm.add_argument("--chapter", type=int, default=0,
+                    help="teach/due：章号（**全书递增号**，D-15）")
+    lm.add_argument("--point-ids", nargs="*", default=None, metavar="ID",
+                    help="teach：本章讲授的知识点 id")
+    lm.add_argument("--beat", default="",
+                    help="due：本章节拍（boss/climax/emotion 不注入复习）")
+    lm.add_argument("--has-new-points", action="store_true",
+                    help="due：本章有新知识点（复习上限降为 1）")
     lm.set_defaults(func=cmd_learn_map)
 
 

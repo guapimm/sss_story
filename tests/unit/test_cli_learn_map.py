@@ -42,6 +42,11 @@ class _Args:
         self.revision = kw.pop("revision", 0)
         self.force = kw.pop("force", False)
         self.verbose = kw.pop("verbose", False)
+        # 阶段 2-4：教学账本
+        self.chapter = kw.pop("chapter", 0)
+        self.point_ids = kw.pop("point_ids", None)
+        self.beat = kw.pop("beat", "")
+        self.has_new_points = kw.pop("has_new_points", False)
         assert not kw, f"未消费的参数：{kw}"
 
 
@@ -363,6 +368,104 @@ def test_history_empty_is_not_an_error(tmp_path, tmp_settings, capsys) -> None:
     rc = cmd_learn_map(_Args("history"))
     assert rc == 0
     assert "暂无历史版本" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# 教学账本（阶段 2-4）—— 艾宾浩斯
+# --------------------------------------------------------------------------- #
+
+
+def test_ledger_empty_is_not_an_error(tmp_path, tmp_settings, capsys) -> None:
+    """★ 首次使用（账本不存在）**不是错误** —— 显示空账本。"""
+    rc = cmd_learn_map(_Args("ledger"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "知识点总数 0" in out
+    assert "3, 7, 15, 30" in out.replace("[", "").replace("]", "")
+
+
+def test_teach_schedules_first_review(tmp_path, tmp_settings, capsys) -> None:
+    """★ `teach` 记录讲授并排第一次复习（第 1 章 → 第 4 章）。"""
+    rc = cmd_learn_map(_Args("teach", chapter=1, point_ids=["kp001", "kp002"]))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "第 4 章" in out, f"未排出首次复习：{out}"
+
+
+def test_teach_requires_point_ids(tmp_path, tmp_settings, capsys) -> None:
+    rc = cmd_learn_map(_Args("teach", chapter=1))
+    assert rc == 2
+    assert "--point-ids" in capsys.readouterr().err
+
+
+def test_ledger_shows_three_states(tmp_path, tmp_settings, capsys) -> None:
+    """★★ 账本必须展示**三态**计数 —— 这是本项目补的缺口。
+
+    阶段 1 的 `TeachingRecord` 只有 4 字段、无三态；不补会让
+    "毕业"与"还没教"无法区分 → 毕业的点被反复挑中。
+    """
+    cmd_learn_map(_Args("teach", chapter=1, point_ids=["kp001"]))
+    capsys.readouterr()
+    rc = cmd_learn_map(_Args("ledger", verbose=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "未讲授" in out and "已讲授" in out and "已复用" in out
+    assert "已毕业" in out
+    assert "kp001" in out
+
+
+def test_due_lists_reviews_for_chapter(tmp_path, tmp_settings, capsys) -> None:
+    """★ `due` 查某章应复习哪些点。"""
+    cmd_learn_map(_Args("teach", chapter=1, point_ids=["kp001"]))
+    capsys.readouterr()
+    rc = cmd_learn_map(_Args("due", chapter=4))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "kp001" in out
+    assert "第 1 次复习" in out
+
+
+def test_due_empty_before_interval(tmp_path, tmp_settings, capsys) -> None:
+    """未到期 → 明确说"无到期复习点"（不静默）。"""
+    cmd_learn_map(_Args("teach", chapter=1, point_ids=["kp001"]))
+    capsys.readouterr()
+    rc = cmd_learn_map(_Args("due", chapter=3))
+    assert rc == 0
+    assert "无到期复习点" in capsys.readouterr().out
+
+
+def test_due_explains_climax_exclusion(tmp_path, tmp_settings, capsys) -> None:
+    """★★ 高潮章不注入复习，且**要说明原因**（避免用户以为是 bug）。
+
+    移植自旧项目：「高潮/Boss/情绪章不注入，避免打断场面」。
+    """
+    cmd_learn_map(_Args("teach", chapter=1, point_ids=["kp001"]))
+    capsys.readouterr()
+    rc = cmd_learn_map(_Args("due", chapter=4, beat="climax"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "不注入复习" in out
+    assert "打断场面" in out, "要说明原因，否则用户以为是漏了"
+
+
+def test_due_respects_new_points_cap(tmp_path, tmp_settings, capsys) -> None:
+    """有新知识点时上限降为 1（移植旧项目 `cap = 1 if has_new_points`）。"""
+    cmd_learn_map(_Args("teach", chapter=1, point_ids=["kp001", "kp002", "kp003"]))
+    capsys.readouterr()
+    cmd_learn_map(_Args("due", chapter=4, has_new_points=True))
+    out = capsys.readouterr().out
+    assert "应复习 1 个" in out, f"有新知识点时应限 1 个：{out}"
+
+
+def test_teach_is_idempotent_across_calls(tmp_path, tmp_settings) -> None:
+    """★ 重复 teach 不重置进度（跨 CLI 调用也要幂等 —— 状态在文件里）。"""
+    cmd_learn_map(_Args("teach", chapter=1, point_ids=["kp001"]))
+    cmd_learn_map(_Args("teach", chapter=99, point_ids=["kp001"]))
+    store = ArtifactStore.from_settings()
+    raw = json.loads(store.read_text(ArtifactStore.teaching_ledger_key(1)))
+    rec = next(r for r in raw["records"] if r["point_id"] == "kp001")
+    assert rec["taught_chapter"] == 1, "重复 teach 改写了首次讲授章"
+    assert rec["next_review_chapter"] == 4
 
 
 # --------------------------------------------------------------------------- #
