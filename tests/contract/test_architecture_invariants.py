@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import ast
+import builtins
+import symtable
 from pathlib import Path
 
 import pytest
@@ -890,4 +892,352 @@ def test_rule21_annotations_reference_defined_names(src_root: Path) -> None:
     assert not offenders, (
         "注解引用了不存在的名字（`from __future__ import annotations` "
         "会让它静默存活）：\n  " + "\n  ".join(sorted(set(offenders)))
+    )
+
+
+def test_rule22_function_bodies_reference_defined_names(src_root: Path) -> None:
+    """规则 22：**函数体内**引用的名字也必须在作用域链上可见。
+
+    ## 为什么需要这条（规则 21 的相邻缺口，实测踩到）
+
+    规则 21 只看**注解** —— 而 `from __future__ import annotations` 让注解
+    惰性求值，那是它存在的理由。但**函数体**里的名字是**立即求值**的：
+    写错就 `NameError`。
+
+    实测（阶段 2-3 收尾）：`commands/learning.py` 的 `_gen_with_llm` 里
+    用了 `get_settings()` 却**没 import** —— 规则 21 抓不到
+    （它不看函数体），单测也抓不到（该函数**需要 API key 才会被调用**，
+    测试里不会走进去）。最终是**手工跑真实 CLI** 才暴露：
+
+        ⚠ LLM 生成失败（NameError: name 'get_settings' is not defined）
+
+    ★ 这与规则 21 修的 `ProviderCapability` 是**同一类缺陷**
+    （"引用了不存在的名字"），只是位置从注解换到了函数体。
+    两处都有测试覆盖才不会漏。
+
+    ## ★★ 为什么改用 stdlib `symtable`（初版手写 AST 分析是**无效契约**）
+
+    初版手写 AST 作用域分析，有**两个互相掩盖**的 bug，实测（变异测试发现）：
+
+      · `_collect_bound(tree, ...)` 对**整棵树** `ast.walk` → 把"函数体内的
+        import"也当成**模块级**绑定 → **函数 A 里 import 的名字对函数 B 可见**
+      · `_check_scope` 用 `ast.walk(scope)` → 把**嵌套函数体内的 Name**
+        拿外层可见集去判
+
+    **第二个 bug 恰好被第一个掩盖**：泄漏把名字塞进了模块级可见集，
+    于是嵌套函数体里的引用"看起来"是可见的，不报错。
+    两者相抵 → 删掉 `_gen_with_llm` **自己**的 import 时规则**照样通过**
+    （当时文件里 `_has_api_key` 也 import 了同名符号，双重掩盖）。
+
+    ⇒ **一个"抓不到问题"的契约测试等于没有。** 这正是本项目已记录的教训。
+
+    ★ 手写作用域分析要同时处理 6 类边界，而本项目里这些构造**都真实存在**
+    （实测：推导式 247 处 · 海象 10 处 · global 5 处 · 类体绑定 182 处 ·
+    lambda 16 处）。任何一处判错 = 误报；而**误报会诱使人删规则**
+    （规则 12 第一次运行即误报过，故特意用 AST 而非子串匹配）。
+
+    `symtable` 是 **CPython 自己**判定 local/free/global 用的模块 ——
+    不再有"我猜错了"的余地。36 条构造样本电池逐条钉住语义
+    （见 `scripts/_probe_rule22_final.py`）。
+
+    ## 判定口径
+
+    一个 `Load` 名若既非 local / free / nonlocal，又不在**模块级**绑定里、
+    也不是内置名 → 运行时必然 `NameError`。
+
+    ★ **模块级绑定只取 `symtable` 顶层表** —— 这正是不再泄漏的关键。
+    唯一例外：`global g; g = 1` 是**显式声明**的模块级绑定，须递归收集
+    （可深藏在嵌套函数里）。
+
+    ★ AST↔symtable 的唯一差异：**PEP 709**（Python 3.12+）把推导式**内联**了，
+    `symtable` 不再为它建子表（实测 39/79 个文件的推导式对不上）。
+    ⇒ AST 侧也**不把推导式当作用域**，两边即完全对齐；
+    推导式目标名由 `symtable` 记成外层函数的 local，天然放行。
+
+    不检查的（会误报，故明确排除）：
+      · **注解**（`x: T` / `def f(a: T) -> T`）—— 归规则 21，本规则不重复报
+      · 属性访问（`x.y` 里的 `y` 是运行时属性，AST 判不了）
+    """
+    offenders: list[str] = []
+
+    for path in _iter_py(src_root):
+        source = path.read_text(encoding="utf-8")
+        if not source.strip():
+            continue
+        found = _undefined_names_in_bodies(source, str(path))
+        rel = path.relative_to(src_root)
+        offenders.extend(
+            f"{rel}:{lineno} 作用域 {scope} 内引用了未定义名 `{name}`"
+            for lineno, scope, name in found
+        )
+
+    assert not offenders, (
+        "函数体引用了未定义的名字（**运行到那一行才炸**，"
+        "且只在该分支被走到时才暴露）：\n  "
+        + "\n  ".join(sorted(set(offenders)))
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 规则 22 的判定实现（`symtable` 定可见性 + AST 取行号）
+#
+# ★ 抽成模块级函数而非测试内闭包：便于 `scripts/_probe_rule22_final.py`
+#   用同一份实现跑构造样本电池，避免"探针里对、接回来错"。
+# --------------------------------------------------------------------------- #
+
+#: `symtable` 不给行号，故用 `(作用域名, 定义行)` 作 AST↔symtable 的对接 key
+_BUILTIN_NAMES = set(dir(builtins))
+_ALWAYS_VISIBLE = {"__file__", "__name__", "__doc__", "__package__", "self", "cls"}
+
+
+def _module_level_bindings(top: symtable.SymbolTable) -> set[str]:
+    """模块级绑定 —— **只取顶层表**。
+
+    ★ 这是本规则的关键。初版对整棵 AST `ast.walk`，把函数体内的 import
+    也算成模块级绑定，于是"函数 A 里 import 的名字"对函数 B 可见（漏报）。
+    """
+    bound = {
+        s.get_name()
+        for s in top.get_symbols()
+        if s.is_assigned() or s.is_imported() or s.is_namespace()
+    }
+
+    def _collect_declared_globals(table: symtable.SymbolTable) -> None:
+        """`global g; g = 1` 是**显式**的模块级绑定，须递归收（可深藏嵌套）。"""
+        bound.update(
+            s.get_name() for s in table.get_symbols()
+            if s.is_global() and s.is_assigned()
+        )
+        for child in table.get_children():
+            _collect_declared_globals(child)
+
+    _collect_declared_globals(top)
+    return bound
+
+
+def _undefined_by_scope(source: str, filename: str) -> dict[tuple[str, int], set[str]]:
+    """`(作用域名, 定义行)` → 该作用域内"被引用但作用域链上无绑定"的名字。"""
+    top = symtable.symtable(source, filename, "exec")
+    module_bound = _module_level_bindings(top)
+    out: dict[tuple[str, int], set[str]] = {}
+
+    def _walk(table: symtable.SymbolTable) -> None:
+        # 顶层表的 get_name() 是 "top"、行号 0；AST 侧统一记作 "<module>"/0
+        key = ("<module>", 0) if table.get_type() == "module" else (
+            table.get_name(), table.get_lineno())
+        names: set[str] = set()
+        for sym in table.get_symbols():
+            name = sym.get_name()
+            if not sym.is_referenced():
+                continue
+            # local / free / nonlocal 都是"作用域链上已绑定" → 放行
+            if sym.is_local() or sym.is_free() or sym.is_nonlocal():
+                continue
+            if name in module_bound or name in _BUILTIN_NAMES or name in _ALWAYS_VISIBLE:
+                continue
+            names.add(name)
+        out[key] = names
+        for child in table.get_children():
+            _walk(child)
+
+    _walk(top)
+    return out
+
+
+def _scope_key_of(node: ast.AST) -> tuple[str, int]:
+    """AST 作用域节点 → 与 `symtable` 一致的 `(名, 行)` key。
+
+    ★ 刻意**不含推导式**：PEP 709（Python 3.12+）已把推导式内联，
+    `symtable` 不为它建子表。若这里认它、那边不认，就会两边对不上。
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return (node.name, node.lineno)
+    if isinstance(node, ast.Lambda):
+        return ("lambda", node.lineno)
+    return ("<module>", 0)
+
+
+def _undefined_names_in_bodies(source: str, filename: str) -> list[tuple[int, str, str]]:
+    """→ `[(行号, 作用域名, 名字)]`，跳过注解（那是规则 21 的职责）。"""
+    undefined = _undefined_by_scope(source, filename)
+    tree = ast.parse(source, filename=filename)
+    out: list[tuple[int, str, str]] = []
+
+    def _visit_args(args: ast.arguments, key: tuple[str, int]) -> None:
+        """参数**注解**归注解；**默认值**在外层作用域求值。"""
+        for arg in [*args.posonlyargs, *args.args, args.vararg,
+                    *args.kwonlyargs, args.kwarg]:
+            if arg is not None and arg.annotation is not None:
+                _visit(arg.annotation, key, in_annotation=True)
+        for default in [*args.defaults, *args.kw_defaults]:
+            if default is not None:
+                _visit(default, key)
+
+    def _visit(node: ast.AST, key: tuple[str, int], in_annotation: bool = False) -> None:
+        if isinstance(node, ast.Name):
+            if (isinstance(node.ctx, ast.Load) and not in_annotation
+                    and node.id in undefined.get(key, ())):
+                out.append((node.lineno, key[0], node.id))
+            return
+
+        # 函数/类：装饰器、默认值、基类在**外层**求值；只有 body 是新作用域
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                _visit(dec, key)
+            _visit_args(node.args, key)
+            if node.returns is not None:
+                _visit(node.returns, key, in_annotation=True)
+            for type_param in getattr(node, "type_params", []):
+                _visit(type_param, key)
+            for stmt in node.body:
+                _visit(stmt, _scope_key_of(node))
+            return
+
+        if isinstance(node, ast.Lambda):
+            _visit_args(node.args, key)
+            _visit(node.body, _scope_key_of(node))
+            return
+
+        if isinstance(node, ast.ClassDef):
+            for dec in node.decorator_list:
+                _visit(dec, key)
+            for base in node.bases:
+                _visit(base, key)
+            for kw in node.keywords:
+                _visit(kw, key)
+            for type_param in getattr(node, "type_params", []):
+                _visit(type_param, key)
+            for stmt in node.body:
+                _visit(stmt, _scope_key_of(node))
+            return
+
+        if isinstance(node, ast.AnnAssign):
+            _visit(node.target, key)
+            if node.annotation is not None:
+                _visit(node.annotation, key, in_annotation=True)
+            if node.value is not None:
+                _visit(node.value, key)
+            return
+
+        if isinstance(node, ast.arg):
+            if node.annotation is not None:
+                _visit(node.annotation, key, in_annotation=True)
+            return
+
+        for child in ast.iter_child_nodes(node):
+            _visit(child, key, in_annotation)
+
+    _visit(tree, ("<module>", 0))
+    return out
+
+
+#: 规则 22 的构造样本电池：`(标题, 源码, 期望报出的名字集合)`。
+#:
+#: ★ 为什么把它放进契约测试（而不只是探针脚本）：
+#: 一条**判定逻辑复杂**的规则，它自己就是被测试对象。
+#: 若只靠"跑一遍现有 src 没报错"来确认，那么规则**退化成永远放行**
+#: 也照样绿灯 —— 本项目实测**已经发生过一次**（旧实现的两个 bug 互相掩盖，
+#: 删掉真依赖仍通过）。所以两个方向都要钉住：
+#:   · 必须报：真 NameError 一律抓出（防漏报）
+#:   · 必须放行：合法的闭包/推导式/海象/global 一律不报（防误报）
+#: 误报同样致命 —— 它会诱使人删掉规则而不是修代码。
+_RULE22_CASES: list[tuple[str, str, set[str]]] = [
+    # ── 必须报（防漏报） ────────────────────────────────────────────
+    ("原缺陷：函数体用了没 import 的名字",
+     "def a():\n    return get_settings()\n", {"get_settings"}),
+    ("★ 函数 A 里 import，函数 B 里用（旧实现漏报）",
+     "def a():\n    import re\n    return re\ndef b():\n    return re.compile('x')\n",
+     {"re"}),
+    ("★ 类体名被方法裸用（Python 不做类作用域闭包）",
+     "class C:\n    y = 1\n    def m(self):\n        return y\n", {"y"}),
+    ("嵌套函数用未定义名",
+     "def a():\n    def b():\n        return ZZZ\n    return b\n", {"ZZZ"}),
+    ("推导式里用未定义名",
+     "def f(ys):\n    return [x + ZZZ for x in ys]\n", {"ZZZ"}),
+    ("装饰器用未定义名",
+     "@deco\ndef f():\n    return 1\n", {"deco"}),
+    ("默认值用未定义名",
+     "def f(a=DDD):\n    return a\n", {"DDD"}),
+    ("类基类用未定义名",
+     "class C(Base):\n    pass\n", {"Base"}),
+    ("lambda 体用未定义名",
+     "f = lambda x: x + QQQ\n", {"QQQ"}),
+    ("模块级用未定义名",
+     "X = UNDEF_AT_MODULE\n", {"UNDEF_AT_MODULE"}),
+    ("三层嵌套函数用未定义名",
+     "def a():\n    def b():\n        def c():\n            return DEEP\n"
+     "        return c\n    return b\n", {"DEEP"}),
+    ("global 只读但模块级无定义",
+     "def f():\n    global NOPE\n    return NOPE\n", {"NOPE"}),
+    ("async 函数体用未定义名",
+     "async def f():\n    return AWAITED\n", {"AWAITED"}),
+    # ── 必须放行（防误报） ──────────────────────────────────────────
+    ("模块级 import 跨函数可见",
+     "import re\ndef a():\n    return re\ndef b():\n    return re.compile('x')\n", set()),
+    ("函数内 import 在**本函数**内可用",
+     "def a():\n    import re\n    return re.compile('x')\n", set()),
+    ("闭包引用外层局部",
+     "def outer():\n    d = 1\n    def inner():\n        return d\n    return inner\n", set()),
+    ("嵌套函数引用外层参数",
+     "def f(p):\n    def g():\n        return p\n    return g\n", set()),
+    ("推导式目标（PEP 709 内联）",
+     "def f(ys):\n    return [x * 2 for x in ys]\n", set()),
+    ("海象在推导式内",
+     "def f(ys):\n    return [y for x in ys if (y := x) > 0]\n", set()),
+    ("with ... as",
+     "def f(p):\n    with open(p) as fh:\n        return fh.read()\n", set()),
+    ("for 解包目标",
+     "def f(d):\n    for k, v in d.items():\n        print(k, v)\n", set()),
+    ("except ... as",
+     "def f():\n    try:\n        pass\n    except ValueError as e:\n        return e\n", set()),
+    ("lambda 参数",
+     "def f():\n    return lambda x: x + 1\n", set()),
+    ("global 声明后赋值，另处可读",
+     "def f():\n    global G\n    G = 1\ndef g():\n    return G\n", set()),
+    ("global 深藏嵌套函数",
+     "def a():\n    def b():\n        global G2\n        G2 = 1\ndef c():\n    return G2\n", set()),
+    ("类名在模块级可见",
+     "class C:\n    pass\ndef f():\n    return C()\n", set()),
+    ("类体自引用（保守放行）",
+     "class C:\n    x = 1\n    z = x + 1\n", set()),
+    ("方法引用模块级名",
+     "HELPER = 1\nclass C:\n    def m(self):\n        return HELPER\n", set()),
+    ("方法引用模块级 import",
+     "import os\nclass C:\n    def m(self):\n        return os.sep\n", set()),
+    ("内置名",
+     "def f(xs):\n    return len(list(xs))\n", set()),
+    ("match 绑定（名字挂在 MatchAs 上，不是 Name 节点）",
+     "def f(v):\n    match v:\n        case {'a': a}:\n            return a\n    return None\n", set()),
+    ("类型注解引用未定义名 → 归规则 21，本规则不重复报",
+     "def f(a: UndefType) -> UndefRet:\n    return a\n", set()),
+    ("变量注解引用未定义名 → 归规则 21",
+     "x: UndefType = 1\n", set()),
+    ("async for / async with",
+     "async def f(aiter, cm):\n    async with cm() as h:\n        async for i in aiter():\n"
+     "            print(h, i)\n", set()),
+    ("嵌套类的方法",
+     "class A:\n    class B:\n        def m(self):\n            return A()\n", set()),
+    ("self 与 cls",
+     "class C:\n    @classmethod\n    def m(cls):\n        return cls\n"
+     "    def n(self):\n        return self\n", set()),
+]
+
+
+@pytest.mark.parametrize(
+    ("title", "source", "expected"),
+    _RULE22_CASES,
+    ids=[c[0] for c in _RULE22_CASES],
+)
+def test_rule22_judgement_matches_python_semantics(
+    title: str, source: str, expected: set[str],
+) -> None:
+    """规则 22 的**自检**：判定必须与 CPython 真实语义一致。
+
+    ★ 北向（漏报）与南向（误报）都钉住 —— 详见 `_RULE22_CASES` 的说明。
+    """
+    got = {name for _, _, name in _undefined_names_in_bodies(source, f"<case:{title}>")}
+    assert got == expected, (
+        f"规则 22 判定与 Python 语义不符：{title}\n"
+        f"  期望报出 {sorted(expected) or '（无）'}\n"
+        f"  实际报出 {sorted(got) or '（无）'}"
     )
