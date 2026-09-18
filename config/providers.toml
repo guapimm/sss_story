@@ -173,5 +173,35 @@ requires = { supports_structured_output = false }
 thinking = "allowed"
 reasoning_effort = "high"
 
+# --------------------------------------------------------------------------- #
+# learn 模式（知识小说）的规划节点 —— 阶段 2-3 补完时新建，
+# 但当时**没有配 `MIMO_API_KEY`**，LLM 路径从未真跑，
+# 所以"忘记登记"一直没被测到（离线路径不经过路由器）。
+# 2026-09-18 首次真跑 LLM 路径立即被 ProviderConfigError 拦下：
+#   ProviderConfigError: 节点 'learning_map' 未在 providers.toml …
+#
+# 三节点的能力判断：
+#   · learning_map / term_mapping —— 从研究资料**规划/创作**（平替修辞），
+#     需要推理 → 与 bible_architect / chapter_writer 同档（allowed + high）
+#   · learning_gap_check —— 找**盲区方向**，只需指出方向不生成内容，
+#     与 style_critic 同属"分析"类 → 同档（allowed + high）
+[nodes.learning_map]
+tier = "balanced"
+requires = { supports_structured_output = true }
+thinking = "allowed"
+reasoning_effort = "high"
+
+[nodes.learning_gap_check]
+tier = "balanced"
+requires = { supports_structured_output = true }
+thinking = "allowed"
+reasoning_effort = "high"
+
+[nodes.term_mapping]
+tier = "balanced"
+requires = { supports_structured_output = true }
+thinking = "allowed"
+reasoning_effort = "high"
+
 # 以下为**零 LLM** 节点，仅登记以示不存在模型依赖（防误加 LLM 调用）
 # scorecard_engine / health_scheduler / continuity_checker / structure_gate
