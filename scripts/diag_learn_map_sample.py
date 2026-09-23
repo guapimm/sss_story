@@ -41,12 +41,22 @@ def main() -> int:
         if isinstance(pt, dict):
             pid = pt.get("point_id") or pt.get("id") or "?"
             name = pt.get("name") or pt.get("title") or "?"
-            src = pt.get("source") or pt.get("source_url") or ""
-            desc = pt.get("description") or pt.get("content") or ""
+            # ⚠️ 字段名是 `source_urls`（复数，tuple）—— 本脚本初版写成
+            # `source` / `source_url`，于是**误报"来源 0%"**。
+            # 这正是本项目记过的教训：诊断工具自身也会造假
+            # （交接文档 §4.8），故这里把真实字段名一次列全。
+            urls = pt.get("source_urls") or pt.get("source_url") or pt.get("source") or []
+            if isinstance(urls, str):
+                urls = [urls] if urls else []
+            src = "、".join(str(u) for u in urls[:2])
+            desc = pt.get("summary") or pt.get("description") or pt.get("content") or ""
+            ev = pt.get("evidence") or ""
             print(f"  {i:>2}. [{pid}] {name}")
             if desc:
                 print(f"      说明: {str(desc)[:100]}")
             print(f"      来源: {src or '（无）'}")
+            if ev:
+                print(f"      依据: {str(ev)[:100]}")
         else:
             print(f"  {i:>2}. {str(pt)[:110]}")
 
@@ -71,10 +81,21 @@ def main() -> int:
     print("可量化维度盘点（用于定验收标准）")
     print("=" * 80)
 
-    with_src = sum(1 for pt in points if isinstance(pt, dict)
-                   and (pt.get("source") or pt.get("source_url")))
-    print(f"  知识点带来源比例 : {with_src}/{len(points)}"
+    def _urls_of(pt: object) -> list[str]:
+        if not isinstance(pt, dict):
+            return []
+        u = pt.get("source_urls") or pt.get("source_url") or pt.get("source") or []
+        if isinstance(u, str):
+            return [u] if u else []
+        return [str(x) for x in u if x]
+
+    with_src = sum(1 for pt in points if _urls_of(pt))
+    with_ev = sum(1 for pt in points
+                  if isinstance(pt, dict) and (pt.get("evidence") or "").strip())
+    print(f"  知识点带来源     : {with_src}/{len(points)}"
           f"  ({with_src / len(points) * 100:.0f}%)" if points else "  —")
+    print(f"  知识点带 evidence: {with_ev}/{len(points)}"
+          f"  ({with_ev / len(points) * 100:.0f}%)" if points else "  —")
 
     seeds = sum(1 for m in mappings if isinstance(m, dict) and m.get("is_seed"))
     print(f"  平替修辞为种子   : {seeds}/{len(mappings)}"
