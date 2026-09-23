@@ -8,16 +8,45 @@
 
 本文件断言的是**用户实际会看到的输出**，不是内部对象。
 
-⚠️ 全部离线（Mock provider 或假 provider），不打网络、不花钱。
+## ★★ 隔离要求（2026-09-23 修复）
+
+原版只声明"全部离线"，**但从未真正隔离**，导致两个真问题：
+
+  1. `cmd_research` 内部走 `get_settings()` 读**真实配置**，
+     于是 `.env` 里配了 `TAVILY_API_KEY` 之后，这些测试**会真的联网**。
+     （实测：`make_research_provider()` 返回 `TavilyResearchProvider`）
+  2. 缓存也读真实的 `data/research_cache.json` —— 一旦该文件里有
+     "一个足够特别的主题" 的命中，`test_research_shows_every_round_query`
+     就走到"缓存命中"分支、输出 `第0轮` 而非 `第1轮` → **假红**。
+
+修法与 `test_cli_learn_map.py` 一致：**每个用例显式注入 `isolated`**，
+把数据目录指到 `tmp_path`、并清掉真实 key。
+**不再依赖"环境里恰好没有 key / 缓存恰好是空的"这种巧合。**
+
+⚠️ 判据：本文件的用例**不因 `.env` 内容变化而改变结果**。
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterator
 
 import pytest
 
 from storyforge.cli import build_parser, cmd_research
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def isolated(tmp_settings, monkeypatch) -> Iterator[None]:
+    """把 research 的外部依赖全部钉死 —— 网络与缓存都不碰真实环境。
+
+    `tmp_settings` 已把 `data_dir` 指向 `tmp_path`（缓存因此天然隔离）；
+    本夹具再补上 key 的隔离：删除真实 `TAVILY_API_KEY`，
+    使 `make_research_provider()` 落回 Mock（这正是各用例断言的前提）。
+    """
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    yield
 
 
 class _Args:
@@ -46,7 +75,7 @@ def test_research_requires_topic(capsys) -> None:
     assert "--topic" in capsys.readouterr().err
 
 
-def test_research_cache_stats_is_offline_and_free(capsys) -> None:
+def test_research_cache_stats_is_offline_and_free(isolated, capsys) -> None:
     """★ `--cache-stats` 必须**零 LLM、零网络**（只读本地缓存文件）。
 
     防的是"看个缓存统计也要联网/要 key"。
@@ -58,7 +87,7 @@ def test_research_cache_stats_is_offline_and_free(capsys) -> None:
         assert label in out, f"缓存统计缺字段 {label}"
 
 
-def test_research_shows_target_points_by_scale(capsys) -> None:
+def test_research_shows_target_points_by_scale(isolated, capsys) -> None:
     """★ 必须显示**目标知识点数** —— 它是"停/续"判据，用户要能核对。
 
     不同档位的目标必须不同（否则"按篇幅调整"不可见）。
@@ -72,10 +101,14 @@ def test_research_shows_target_points_by_scale(capsys) -> None:
     assert str(target_points_for("fast")) in out
 
 
-def test_research_shows_every_round_query(capsys) -> None:
+def test_research_shows_every_round_query(isolated, capsys) -> None:
     """★★ 逐轮可视化：每轮的 query 都要能看到。
 
     这是"避免黑盒"的核心 —— 用户要能看出系统换了几种角度搜。
+
+    ⚠️ 断言的是**第 1 轮**（而非 0）—— 轮次从 1 开始编号，因为它是
+    给用户看的"第几轮"，不是数组下标。缓存命中路径会打印 `第0轮`，
+    本用例靠 `isolated`（空缓存 + 无 key）保证走到真实编排分支。
     """
     rc = cmd_research(_Args(topic="一个足够特别的主题", scale="fast"))
     out = capsys.readouterr().out
@@ -83,7 +116,7 @@ def test_research_shows_every_round_query(capsys) -> None:
     assert "核心概念" in out, "第一轮的角度应可见"
 
 
-def test_research_reports_shortfall_honestly(capsys) -> None:
+def test_research_reports_shortfall_honestly(isolated, capsys) -> None:
     """★★ 未达标必须**如实报告**，不得只显示"完成"。
 
     Mock 的占位文本很短 → 估算 0 知识点 → 必然未达标。
@@ -96,7 +129,7 @@ def test_research_reports_shortfall_honestly(capsys) -> None:
     assert "角度用尽" in out or "轮次" in out
 
 
-def test_research_warns_loudly_in_mock_mode(capsys) -> None:
+def test_research_warns_loudly_in_mock_mode(isolated, capsys) -> None:
     """★★ Mock 模式必须**显眼告警**，且片段带 `[Mock]` 标记。
 
     否则用户可能把占位文本当真实检索结果 —— 旧项目 Mock 无结构化标记，
@@ -109,8 +142,12 @@ def test_research_warns_loudly_in_mock_mode(capsys) -> None:
     assert "[Mock]" in out, "片段必须带可识别标记"
 
 
-def test_research_require_real_fails_without_key(capsys, monkeypatch) -> None:
-    """`--require-real` 无 key 时必须**失败**（不静默降级为 Mock）。"""
+def test_research_require_real_fails_without_key(tmp_settings, monkeypatch, capsys) -> None:
+    """`--require-real` 无 key 时必须**失败**（不静默降级为 Mock）。
+
+    ⚠️ 这里用 `tmp_settings` 而非 `isolated`：本用例**要**演"没有 key"，
+    但仍需隔离数据目录，否则会往真实 `data/` 写缓存。
+    """
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     rc = cmd_research(_Args(topic="主题", require_real=True))
     assert rc == 1
