@@ -135,6 +135,91 @@ def test_validate_detects_missing_source() -> None:
     assert any("幻觉" in i for i in issues)
 
 
+# --------------------------------------------------------------------------- #
+# ★ 来源「全体相同」的检出（2026-09-23 新增）
+# --------------------------------------------------------------------------- #
+# 背景：实测书 991 的 11 个知识点**全部挂了同一组 3 个 URL** ——
+# 原实现是"把研究资料前 3 条全挂给每条知识点"。
+# 于是 `has_source` 全 True、上面那条检查**全绿**，
+# 而实际上无法回答「**这条**知识点依据的是**哪一段**」。
+#
+# 这是「有形式、无实质」：校验器只查"有没有"、不查"对不对"，就给假绿。
+# 与旧项目 `entry_state` 填充率 13% 而无人发现是同一类。
+
+
+def test_validate_detects_all_sources_identical() -> None:
+    """★★ 全部知识点的来源**完全相同** → 不是逐条溯源，是统一赋值。
+
+    这是本次新增的判据。修复前的真实产物正是这个形态（11 条全同），
+    而当时 `validate_map` **返回空**（全绿）。
+    """
+    same = ("https://a", "https://b", "https://c")
+    m = _map(points=[
+        KnowledgePoint(point_id=f"kp{i:03d}", name=f"点{i}", source_urls=same)
+        for i in range(1, 5)
+    ])
+    issues = validate_map(m)
+    assert any("完全相同" in i for i in issues), (
+        f"4 个知识点来源完全相同却未检出：{issues}"
+    )
+
+
+def test_validate_allows_partial_source_overlap() -> None:
+    """★ 反向：**部分**重叠是正常的，不得误报。
+
+    资料少时两条知识点恰好依据同一份资料很自然。
+    判据取"**全体**完全一致"而不是"两两不同"，就是为了不误报 ——
+    误报会诱使人放宽规则（项目反模式：「误报诱人删注释」）。
+    """
+    m = _map(points=[
+        KnowledgePoint(point_id="kp001", name="A", source_urls=("https://a",)),
+        KnowledgePoint(point_id="kp002", name="B", source_urls=("https://a",)),
+        KnowledgePoint(point_id="kp003", name="C", source_urls=("https://b",)),
+    ])
+    issues = validate_map(m)
+    assert not any("完全相同" in i for i in issues), (
+        f"部分重叠被误报为全同：{issues}"
+    )
+
+
+def test_validate_skips_identical_check_when_too_few() -> None:
+    """★ 少于 3 条时不判（2 条相同不足以说明"统一赋值"）。"""
+    m = _map(points=[
+        KnowledgePoint(point_id="kp001", name="A", source_urls=("https://a",)),
+        KnowledgePoint(point_id="kp002", name="B", source_urls=("https://a",)),
+    ])
+    issues = validate_map(m)
+    assert not any("完全相同" in i for i in issues)
+
+
+def test_identical_source_check_is_not_vacuous() -> None:
+    """★★ 变异测试：证明这条校验**真的会红**（不是恒真断言）。
+
+    项目教训（规则 22）：判定逻辑复杂的规则**它自己就是被测对象** ——
+    只靠"跑一遍现有 src/ 没报错"确认，则规则退化成永远放行也照样绿灯。
+
+    这里直接把被判据保护的形态构造出来，断言它**必须**被检出；
+    若有人把 `distinct` 的判断写反（如 `!= 1`）或删掉整段，本测试即失败。
+    """
+    same = ("https://x",)
+    three_same = [
+        KnowledgePoint(point_id=f"kp{i:03d}", name=f"n{i}", source_urls=same)
+        for i in range(1, 4)
+    ]
+    assert any(
+        "完全相同" in i for i in validate_map(_map(points=three_same))
+    ), "恰好 3 条相同应被检出（阈值边界）"
+
+    # 把其中一条换成别的来源 → 立刻不该再报（证明判据真的在看数据）
+    mixed = three_same[:-1] + [
+        KnowledgePoint(point_id="kp003", name="n3", source_urls=("https://y",))
+    ]
+    assert not any(
+        "完全相同" in i for i in validate_map(_map(points=mixed))
+    ), "有一条不同就不该报（否则是恒真断言）"
+
+
+
 def test_validate_detects_duplicate_term() -> None:
     """同一术语两条映射 → "用哪个说法"不确定。"""
     m = _map(mappings=[

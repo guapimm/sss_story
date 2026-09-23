@@ -29,7 +29,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class KnowledgePointOut(BaseModel):
@@ -38,6 +40,33 @@ class KnowledgePointOut(BaseModel):
     ⚠️ 与 `domain/learning.py:KnowledgePoint` 的区别：那个是**领域模型**
     （带 `point_id` 与来源溯源，由代码赋值）；本类是**模型输出契约**
     （模型只给名字与说明，**不给 id** —— id 由代码生成，避免模型编造重复 id）。
+
+    ## ★ `evidence_index`：让溯源**逐条可核验**（2026-09-23 新增）
+
+    ### 修的是什么
+
+    原实现的溯源是**假溯源**（`commands/learning.py:469` 注释自承
+    「不逐条对应某个 URL」）：把研究资料的**前 3 条 URL 全挂给每条知识点**。
+    实测 11 条知识点的 `source_urls` **完全相同**。
+
+    后果：`validate_map` 只查"URL 非空" → **全绿通过**，
+    但无法回答「**这条**知识点依据的是**哪一段**」。
+    而 `evidence` 字段（注释写明是"**反幻觉的依据**"）
+    被 `evidence=shortfall or ""` 占用成了别的东西 —— **语义错位**。
+
+    ### 为什么用 index 而不是让模型直接抄 URL
+
+      · **结构化事实 vs 文本启发式**：项目立的规矩是
+        「能用结构性事实回答的问题，不要用文本启发式回答」。
+        让模型回一个**编号**，代码据此取 URL 与原文 —— 可追溯、
+        可校验（编号越界即报错）。让模型抄 URL 则会引入拼写漂移。
+      · **防 URL 幻觉**：模型只能引用**存在**的编号，不能编造网址。
+
+    ### 取值约定
+
+      · 从 **1** 开始（与 prompt 里给资料的编号一致；
+        `0` 不合法 —— 那通常是"从 0 开始数"的 off-by-one）
+      · 越界 → 校验失败（不静默丢弃，见 `_check_index_in_range`）
     """
 
     name: str = Field(description="知识点名（简洁，≤20 字）")
@@ -45,6 +74,52 @@ class KnowledgePointOut(BaseModel):
     difficulty: int = Field(default=1, description="难度 1~5")
     #: 依赖的前置知识点名（可空；用于排序）
     dependencies: list[str] = Field(default_factory=list)
+    #: ★ 该知识点依据的研究资料**编号**（prompt 里给出的 `[N]`，从 1 开始）。
+    #:
+    #: 空 tuple = 模型未标注依据 → 代码侧会显式暴露（不静默补默认值：
+    #: "没标注"与"依据第 1 条"是两回事，替它猜等于制造假溯源）。
+    evidence_index: list[int] = Field(
+        default_factory=list,
+        description="依据的研究资料编号（从 1 开始，可多条）",
+    )
+
+    @field_validator("evidence_index", mode="before")
+    @classmethod
+    def _normalize_index(cls, v: Any) -> Any:
+        """归一：接受单个 int、数字字符串、`[1, "2"]` 等写法。
+
+        与项目既有原则一致 —— **对输入宽容，对输出严格**：
+        模型把编号写成 `"1"` 或裸 `1` 都是自然的，形状漂移不该让整轮失败。
+        但**越界**是实质错误，交由 `_check_index_in_range` 显式报错。
+        """
+        if v is None or v == "":
+            return []
+        if isinstance(v, (int, str)) or not isinstance(v, (list, tuple)):
+            v = [v]
+        out: list[int] = []
+        for x in v:
+            try:
+                out.append(int(str(x).strip()))
+            except (TypeError, ValueError):
+                continue      # 非数字项丢弃（形状瑕疵），不抛错
+        return out
+
+    @model_validator(mode="after")
+    def _check_index_in_range(self) -> KnowledgePointOut:
+        """编号必须 ≥1；**上界**由调用方按资料条数校验（schema 不知道条数）。
+
+        ⚠️ 这里只拦"明显非法"（0 / 负数）—— 它们一定是 off-by-one。
+        上界的校验放在 `commands/learning.py`，因为只有那里知道
+        `len(snippets)`。
+        """
+        bad = [i for i in self.evidence_index if i < 1]
+        if bad:
+            raise ValueError(
+                f"知识点 {self.name!r} 的 evidence_index 含非法编号 {bad} —— "
+                f"编号从 **1** 开始（0 通常是 off-by-one）"
+            )
+        return self
+
 
 
 class LearningModuleOut(BaseModel):
@@ -181,11 +256,26 @@ LEARNING_MAP_SYSTEM = """你是学习路线设计师。根据研究资料，为�
      "difficulty": 2,
      "knowledge_points": [
        {"name": "知识点名（≤20 字）", "summary": "一句话说明（≤40 字）",
-        "difficulty": 1, "dependencies": ["前置知识点名"]}
+        "difficulty": 1, "dependencies": ["前置知识点名"],
+        "evidence_index": [1, 3]}
      ]}
   ]
 }
 ```
+
+## ★ 每个知识点必须标注 `evidence_index`（依据哪几条资料）
+
+研究资料在下方以 **`[1] [2] [3] …` 编号**给出。
+
+  · `evidence_index` 填**编号数组**，如 `[1]`、`[2, 5]`
+  · **必须填**。这是"这条知识点从哪来"的唯一凭据 ——
+    没有依据的知识点会被判为**可能的幻觉**并被拒
+  · **只填真实存在的编号**。不能引用不存在的编号，也不能编造网址
+  · 一条知识点可以依据多条资料；不同知识点应依据**不同**资料
+    （若所有知识点都填同一组编号，说明没有真正逐条溯源）
+
+> 为什么要你标编号而不是让代码猜：你的标注是**可追溯的事实**，
+> 而"事后用相似度匹配"是猜测 —— 猜测无法作为反幻觉的依据。
 
 ## 硬性要求
 

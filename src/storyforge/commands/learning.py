@@ -33,6 +33,11 @@ import json
 import sys
 from pathlib import Path
 
+from storyforge.commands.learning_gen import (
+    gen_with_llm,
+    has_api_key,
+    points_from_snippets,
+)
 from storyforge.domain.learning import (
     KnowledgePoint,
     LearningMap,
@@ -324,8 +329,12 @@ def _do_gen(args: argparse.Namespace) -> int:
     # ⚠️ 判据要先看**有没有资料**再看 key：无资料时 LLM 无从下手
     # （会编造）。初版先打"用 LLM 生成…"再判断，导致输出**误导**
     # （打印了 LLM 却走了离线路径）—— 实测发现后把提示移到分支内。
-    use_llm = not args.offline and _has_api_key() and bool(raw_snippets)
-    if not use_llm and not args.offline and _has_api_key() and not raw_snippets:
+    #
+    # ★ 生成逻辑已拆到 `learning_gen.py`（契约规则 10：单文件 ≤800 行，
+    #   本文件 2026-09-23 涨到 806 行被拦下）。拆的是**生成**，
+    #   本文件保留**读写与 CLI 操作**（show/accept/edit/rollback）。
+    use_llm = not args.offline and has_api_key() and bool(raw_snippets)
+    if not use_llm and not args.offline and has_api_key() and not raw_snippets:
         print("⚠ 无研究资料 → 走离线路径（LLM 没有依据会编造）")
     elif args.offline:
         print("（--offline：强制离线路径）")
@@ -339,7 +348,7 @@ def _do_gen(args: argparse.Namespace) -> int:
         print(f"用 LLM 生成学习地图与平替修辞 …（研究资料 {len(raw_snippets)} 条）")
         try:
             points, mappings, calls = asyncio.run(
-                _gen_with_llm(
+                gen_with_llm(
                     topic=args.topic, genre=args.genre, scale=args.scale,
                     snippets=raw_snippets, shortfall=shortfall, book_id=book_id,
                 )
@@ -351,7 +360,7 @@ def _do_gen(args: argparse.Namespace) -> int:
             use_llm = False
 
     if not use_llm:
-        points = _points_from_snippets(raw_snippets, topic=args.topic)
+        points = points_from_snippets(raw_snippets, topic=args.topic)
         seed = load_mapping_seed(args.genre)
         mappings = [
             TermMapping(term=m.term, replacement=m.replacement,
@@ -384,150 +393,6 @@ def _do_gen(args: argparse.Namespace) -> int:
     print(f"  storyforge learn-map accept --book-id {book_id} --points      # L-1")
     print(f"  storyforge learn-map accept --book-id {book_id} --mappings    # L-2")
     return 0
-
-
-def _has_api_key() -> bool:
-    """是否配置了 LLM key（决定 `gen` 走 LLM 还是离线路径）。"""
-    from storyforge.infra.llm.capability import load_registry
-
-    try:
-        reg = load_registry()
-    except Exception:  # noqa: BLE001
-        return False
-    name = getattr(reg, "default_provider", None)
-    if name and name in reg.providers:
-        return bool(reg.providers[name].resolve_api_key())
-    # 没有显式默认 provider → 任一个可用即可
-    return any(
-        (not p.api_key_env) or p.resolve_api_key()
-        for p in reg.providers.values()
-    )
-
-
-async def _gen_with_llm(
-    *, topic: str, genre: str, scale: str, snippets: list[dict],
-    shortfall: str, book_id: int,
-) -> tuple[list[KnowledgePoint], list[TermMapping], int]:
-    """LLM 路径：研究资料 → 学习地图 →（缺口自检）→ 平替修辞。
-
-    返回 `(知识点, 平替修辞, LLM 调用次数)`。
-    """
-    from storyforge.config import get_settings
-    from storyforge.graph.nodes.learning import (
-        check_gaps,
-        generate_learning_map,
-        generate_term_mappings,
-    )
-    from storyforge.infra.llm.client import ClientConfig, LLMClient
-    from storyforge.infra.llm.transport import make_transport
-    from storyforge.modes.mappings import load_mapping_seed
-
-    s = get_settings()
-    client = LLMClient(
-        make_transport(),
-        config=ClientConfig(max_attempts=s.llm.max_attempts,
-                            timeout_s=s.llm.default_timeout_s),
-    )
-    calls = 0
-
-    # ① 学习地图
-    map_out, c = await generate_learning_map(
-        client, topic=topic, genre=genre, scale=scale, snippets=snippets,
-        research_shortfall=shortfall, book_id=book_id,
-        idempotency_key=f"learn:map:{book_id}:{topic}",
-    )
-    calls += c
-    if map_out is None:
-        raise RuntimeError("学习地图生成失败（空输出）")
-
-    # ② 缺口自检（只报告，不自动补全 —— 补全成本由用户决定）
-    gaps: list[str] = []
-    try:
-        gap_out, c2 = await check_gaps(
-            client, topic=topic, map_out=map_out, book_id=book_id,
-            idempotency_key=f"learn:gaps:{book_id}:{topic}",
-        )
-        calls += c2
-        gaps = list(gap_out.gaps) if gap_out else []
-    except Exception:  # noqa: BLE001
-        gaps = []          # 缺口自检失败不该让整轮失败（它是增强项）
-    if gaps:
-        print(f"  ⚠ 缺口自检发现 {len(gaps)} 个盲区方向：{'、'.join(gaps[:3])}")
-        print("    （一期只报告不自动补全 —— 可据此再跑 research 补充资料）")
-
-    # ③ 知识点（**id 由代码生成**，不采信模型的命名 —— 防 id 漂移）
-    points: list[KnowledgePoint] = []
-    for mod in map_out.modules:
-        for p in mod.knowledge_points:
-            points.append(
-                KnowledgePoint(
-                    point_id=f"kp{len(points) + 1:03d}",
-                    name=p.name.strip()[:60],
-                    summary=p.summary.strip()[:120],
-                    topic=mod.name,
-                    difficulty=int(p.difficulty or 1),
-                    # 溯源：知识点来自整份研究资料，不逐条对应某个 URL
-                    # （模型只说"依据资料"，不指认具体是哪一条）
-                    source_urls=tuple(
-                        str(s.get("url", "")) for s in snippets
-                        if s.get("url")
-                    )[:3],
-                    evidence=shortfall or "",
-                )
-            )
-
-    # ④ 平替修辞（带种子当 few-shot —— 用户决策"流派根据已有的来"）
-    seed = load_mapping_seed(genre)
-    terms = [p.name for p in points]
-    maps: list[TermMapping] = []
-    if terms:
-        batch, c3 = await generate_term_mappings(
-            client, topic=topic, genre=genre, terms=terms,
-            seed_examples=[
-                {"term": m.term, "replacement": m.replacement,
-                 "rationale": m.rationale}
-                for m in seed.mappings[:5]
-            ],
-            book_id=book_id,
-            idempotency_key=f"learn:mappings:{book_id}:{topic}",
-        )
-        calls += c3
-        seen: set[str] = set()
-        for mp in (batch.mappings if batch else []):
-            t, r = mp.term.strip(), mp.replacement.strip()
-            # 去重 + 拒绝"等于没平替"（与 validate_map 同口径，此处就近拦）
-            if not t or not r or t == r or t in seen:
-                continue
-            seen.add(t)
-            maps.append(TermMapping(term=t, replacement=r,
-                                    rationale=mp.rationale.strip()))
-
-    return points, maps, calls
-
-
-def _points_from_snippets(snippets: list[dict], *, topic: str) -> list[KnowledgePoint]:
-    """离线路径：研究片段 → 知识点（**启发式**，不调 LLM）。
-
-    ⚠️ 这是**确定性基线**，不是真语义抽取：按片段长度过滤 +
-    标题作名字。它的价值是让无 key 环境能跑完确认流程；
-    真实质量依赖 LLM 路径（`_gen_with_llm`）。
-    """
-    points: list[KnowledgePoint] = []
-    for sn in snippets:
-        text = str(sn.get("text", ""))
-        if len(text) < 80:
-            continue
-        points.append(
-            KnowledgePoint(
-                point_id=f"kp{len(points) + 1:03d}",
-                name=str(sn.get("title", ""))[:60] or f"知识点{len(points) + 1}",
-                summary=text[:120],
-                topic=topic,
-                source_urls=(str(sn.get("url", "")),) if sn.get("url") else (),
-                evidence=text[:300],
-            )
-        )
-    return points
 
 
 # -- show -------------------------------------------------------------------

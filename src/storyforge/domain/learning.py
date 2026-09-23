@@ -185,6 +185,7 @@ def validate_map(m: LearningMap) -> list[str]:
       4. 映射两侧为空 —— 空壳条目进了 prompt 等于没约束
       5. 说法与原术语**相同** —— 等于没做平替（正文仍会直出原术语）
       6. 知识点无来源 —— 可能是幻觉（Mock 研究的必然结果，需显式暴露）
+      7. 来源**全体相同** —— 是统一赋值而非逐条溯源（见下方长注释）
     """
     issues: list[str] = []
 
@@ -208,6 +209,31 @@ def validate_map(m: LearningMap) -> list[str]:
             f"{len(no_source)} 个知识点没有可核对来源（可能是幻觉）："
             f"{no_source[:5]}"
         )
+
+    # ★ 7. 溯源**不得全体相同**（2026-09-23 新增）
+    #
+    # ## 为什么只查「非空」不够
+    #
+    # 实测（书 991 / 11 个知识点）：每条都挂了**同一组 3 个 URL** ——
+    # 原实现的溯源是"把资料前 3 条全挂给每条知识点"。
+    # 于是 `has_source` 全为 True、上面那条检查**全绿**，
+    # 而实际上无法回答「**这条**知识点依据的是**哪一段**」。
+    #
+    # 这是「**有形式、无实质**」的典型：校验器只查"有没有"、不查"对不对"，
+    # 就会给出假绿。旧项目 `entry_state` 填充率 13% 而无人发现，是同一类。
+    #
+    # 判据取"**全部知识点来源集完全一致**"而非"两两不同"：
+    #   · 两条知识点恰好依据同一份资料是**正常**的（尤其资料少时）
+    #   · 但**全体**完全一致 ⇒ 一定是代码统一赋值，不是逐条溯源
+    # 这样既不误报，又能抓住真正的退化。
+    sourced = [p for p in m.points if p.has_source]
+    if len(sourced) >= 3:
+        distinct = {tuple(sorted(p.source_urls)) for p in sourced}
+        if len(distinct) == 1:
+            issues.append(
+                f"{len(sourced)} 个知识点的来源**完全相同** —— "
+                f"这不是逐条溯源，是统一赋值（无法核对某条具体依据哪一段）"
+            )
 
     seen_terms: set[str] = set()
     for mp in m.mappings:
