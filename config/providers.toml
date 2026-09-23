@@ -39,9 +39,48 @@ api_key_env = "OPENAI_COMPAT_API_KEY"
 #   "none" | "automatic_prefix"（自动前缀缓存，如 DeepSeek）| "explicit_control"（如 Anthropic）
 
 [[models]]
+id = "mimo-v2.6-flash"
+provider = "mimo"
+tier = "balanced"              # ★ 2026-09-23 起为写作与规划的**默认模型**
+context_window = 1000000
+max_output_tokens = 131072
+supports_structured_output = true
+supports_json_mode = true      # ★ 实测：json_object 与 json_schema(strict) 均可解析
+supports_reasoning = true
+reasoning_control = "effort"   # ★ 实测：low/high 均被接受（HTTP 200）
+default_reasoning_effort = "low"
+cache_mode = "automatic_prefix"
+concurrency = 3                # 保守值：Token Plan 是共享额度
+pricing = { cached_input = 2.0, input = 100.0, output = 200.0, currency = "CREDITS" }
+
+# --------------------------------------------------------------------------- #
+# ★ v2.6 实测记录（2026-09-23，`scripts/probe_mimo_v26.py`）
+# --------------------------------------------------------------------------- #
+# 逐项实测结果 —— 这些数字决定上面的声明，**不要凭 v2.5 的印象改**：
+#
+#   · 基线调用          HTTP 200，content 56ch，reasoning 占 out 的 85%
+#   · reasoning_effort  low 与 high 均被接受（与 v2.5 一致）
+#   · json_object       ★ 可解析（与 v2.5 一致）
+#   · json_schema strict★ 可解析（v2.5 未测过，本版新增确认）
+#   · 长输出 4000 预算  content 356ch（normal）
+#
+# ★★ 一条**必须延续**的事实：v2.6 依然**无法真正关闭思考**
+#     `enable_thinking=False` → reasoning 仍占 out 的 **88%**
+#     `thinking=False`        → reasoning 仍占 out 的 **97%**
+#     这与 v2.5 完全一致，故抽取节点继续声明 `minimize` 而非 `forbidden`。
+#     对照证据：同批实测中 `mimo-v2.6-pro` 在 800 token 预算下
+#     **content 直接为空**（800 全烧在 reasoning）—— 正是旧项目
+#     `entity_classify` 空输出 100% 的同一失败模式。
+#     ⇒ 抽取类节点的预算必须给足，且**不能**假设"关了思考就安全"。
+#
+# ★ 抽取稳定性专项实测（`scripts/probe_mimo_v26_extract.py`，重复 5×2 组）：
+#     空输出 0 / 非法 JSON 0 / 形状漂移 0，平均 reasoning ≈ 106~109 tokens
+#     —— 在真实抽取 prompt 形状下**稳定**，故可作为抽取节点的默认。
+
+[[models]]
 id = "mimo-v2.5"
 provider = "mimo"
-tier = "balanced"              # 写作与规划都走它（单模型策略，与旧项目一致）
+tier = "balanced"              # 保留为**回退**：v2.6 若出现异常可一行切回
 context_window = 1000000       # 旧项目 model_capacity 实测声明值
 max_output_tokens = 131072     # 同上
 supports_structured_output = true
@@ -55,6 +94,24 @@ concurrency = 3                # 保守值：Token Plan 是共享额度
 # `doc/research/08-mimo-integration.md`（hit=2 / miss=100 / output=200）。
 # 因此这里填**点数单价**并标明 currency，避免与美元模型混算。
 pricing = { cached_input = 2.0, input = 100.0, output = 200.0, currency = "CREDITS" }
+
+[[models]]
+id = "mimo-v2.6-pro"
+provider = "mimo"
+tier = "premium"
+context_window = 1000000
+max_output_tokens = 131072
+supports_structured_output = true
+supports_json_mode = true
+supports_reasoning = true
+reasoning_control = "effort"
+default_reasoning_effort = "low"
+cache_mode = "automatic_prefix"
+concurrency = 1
+pricing = { cached_input = 2.0, input = 100.0, output = 200.0, currency = "CREDITS" }
+# ⚠️ 实测告警（2026-09-23）：800 token 预算下 **content 为空**
+#    （out=800 全为 reasoning）。用它时预算必须显著放大，
+#    否则会复现旧项目 entity_classify 的空输出模式。当前不设为任何节点默认。
 
 [[models]]
 id = "mimo-v2.5-pro"

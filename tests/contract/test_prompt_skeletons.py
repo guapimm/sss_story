@@ -306,3 +306,96 @@ def _model_types(annotation) -> list:
 
     walk(annotation)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# ★★ 文件型 prompt 的骨架契约（2026-09-23 新增）
+# --------------------------------------------------------------------------- #
+#: 以**独立 .md 文件**存放的 prompt → (文件名, schema 类名)
+#:
+#: ## 为什么必须补这一条（缺陷 11 的漏洞再犯）
+#:
+#: 上面的 `STRUCTURED_NODES` 只覆盖**写在 .py 里的字符串常量**
+#: （`ast` 解析 `Assign` 找 `ast.Constant`）。而 `style_critic` 的 prompt
+#: 是 `infra/prompts/style_critic.md`，由 `library._load()` 读文件 ——
+#: **它不在任何一条契约的保护范围内**。
+#:
+#: 后果实测（2026-09-23 切 `mimo-v2.6-flash` 后真实 `write` 崩）：
+#:
+#:     StructuredOutputError: 节点 style_critic 结构化输出校验失败（3 次尝试）
+#:       - 缺必填字段：issues.0.description  （×10 条）
+#:     原始输出：{"score":6.5,"issues":[{"type":"AI味","location":"…",
+#:               "detail":"…","fix":"…"}, ...]}
+#:
+#: 模型给 `detail`/`fix`，schema 要 `description`/`suggestion` ——
+#: **信息全都在，只是字段名不同**。而该 prompt 当时只写了"只输出 JSON"，
+#: **一个字段名都没给**。
+#:
+#: ★ 这与缺陷 11 是**同一个根因的第二处**：契约漏登记 ⇒ 长期无骨架而全绿。
+#:   ⇒ 登记原则：**凡是有 JSON 输出的节点，无论 prompt 放在哪，都必须登记**。
+FILE_PROMPTS: tuple[tuple[str, str], ...] = (
+    ("style_critic", "ReviewResultOut"),
+)
+
+
+@pytest.mark.parametrize("prompt_name,schema_name", FILE_PROMPTS)
+def test_file_prompt_contains_json_skeleton(prompt_name, schema_name) -> None:
+    """★ 文件型 prompt 必须含 ```json 骨架，且字段名与 schema 一致。"""
+    path = SRC_ROOT / "infra" / "prompts" / f"{prompt_name}.md"
+    assert path.exists(), f"登记的文件型 prompt 不存在：{path}"
+    text = path.read_text(encoding="utf-8")
+
+    blocks = re.findall(r"```json\s*(.+?)```", text, re.S)
+    assert blocks, (
+        f"{prompt_name}.md 没有 JSON 骨架 —— 只写「只输出 JSON」不够："
+        f"模型会自造同义字段名（实测：detail / fix），"
+        f"每个名字对不上都让整轮校验失败并**中断 write**。"
+    )
+
+    blob = "\n".join(blocks)
+
+    # ① 骨架里的字段名必须真的在 schema 里
+    schema = _resolve_schema(schema_name)
+    valid = set(schema.model_fields)
+    for f in schema.model_fields.values():
+        for sub in _model_types(f.annotation):
+            valid |= set(sub.model_fields)
+
+    keys = set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:', blob))
+    unknown = sorted(keys - valid)
+    assert not unknown, (
+        f"{prompt_name}.md 的骨架含 schema 中不存在的字段 {unknown} —— "
+        f"模型会照着不存在的字段名输出，必然校验失败"
+    )
+
+    # ② schema 的**必填**字段必须都出现在骨架里
+    required = {n for n, f in schema.model_fields.items() if f.is_required()}
+    missing = sorted(required - keys)
+    assert not missing, (
+        f"{prompt_name}.md 的骨架漏了必填字段 {missing} —— "
+        f"模型不知道要输出它 ⇒ 必然失败（这正是本次实测的崩溃）"
+    )
+
+
+def test_nested_schema_required_fields_appear_in_file_skeleton() -> None:
+    """★ 嵌套模型的**必填**字段也必须出现在骨架里。
+
+    `ReviewResultOut.issues` 是 `list[ReviewIssueOut]`，而
+    `ReviewIssueOut.description` 是必填 —— 本次崩溃正是漏了它。
+    只查顶层字段会漏掉这一层（`_NESTED_REQUIRED` 是手工登记，容易过期）。
+    """
+    schema = _resolve_schema("ReviewResultOut")
+    nested_required: set[str] = set()
+    for f in schema.model_fields.values():
+        for sub in _model_types(f.annotation):
+            nested_required |= {n for n, sf in sub.model_fields.items() if sf.is_required()}
+
+    path = SRC_ROOT / "infra" / "prompts" / "style_critic.md"
+    blob = "\n".join(re.findall(r"```json\s*(.+?)```", path.read_text(encoding="utf-8"), re.S))
+
+    missing = sorted(w for w in nested_required if f'"{w}"' not in blob)
+    assert not missing, (
+        f"style_critic.md 的骨架漏了嵌套必填字段 {missing} —— "
+        f"模型会自造同义名，导致 3 次重试全败"
+    )
+

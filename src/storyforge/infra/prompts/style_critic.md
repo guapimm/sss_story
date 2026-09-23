@@ -2,6 +2,41 @@
 
 **只输出 JSON**，不要任何解释或代码块标记。
 
+## 输出格式（★ 必须严格照此骨架，字段名不得改写）
+
+```json
+{
+  "score": 6.5,
+  "issues": [
+    {
+      "severity": "minor",
+      "category": "ai_style",
+      "location": "中段：主角进入档案室处",
+      "description": "问题说明（具体、可执行，指出是哪一句、错在哪）",
+      "suggestion": "修改建议（怎么改）"
+    }
+  ],
+  "revised_content": "修正后的完整正文全文",
+  "notes": "补充说明（不作为判据）"
+}
+```
+
+字段名**必须**用上面这套：
+
+| 该用 | 不要用（实测模型会自造） |
+|---|---|
+| `description` | ~~detail~~ / ~~problem~~ / ~~issue~~ / ~~msg~~ |
+| `suggestion` | ~~fix~~ / ~~advice~~ / ~~solution~~ |
+| `severity` | ~~level~~ / ~~importance~~ |
+| `category` | ~~type~~ / ~~kind~~ |
+
+★ `category` 取值必须是这 8 个之一：
+`ai_style` | `consistency` | `pacing` | `logic` |
+`foreshadow` | `ooc` | `outline_deviation` | `other`
+
+**缺字段会导致整轮校验失败、本章重写中断** —— 信息不全就填最保守的
+（`severity: "minor"`、`category: "other"`），但 `description` **必须有**。
+
 ## 审查重点
 
 1. **AI 味**：套话密集（仿佛/瞬间/不禁/嘴角勾起…）、比喻过多、
