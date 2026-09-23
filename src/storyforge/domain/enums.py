@@ -315,6 +315,90 @@ class RelationSentiment(StrEnum):
     CONFLICTED = "conflicted"
 
 
+#: 关系类型别名 → `RelationKind`。
+#:
+#: ★ 与 `_ENTITY_KIND_ALIASES` 同因：LLM 会给同义异形标签。
+#: 旧项目 254 条人物边用了 **191 种**自由文本（受控词表只覆盖 12.2%），
+#: `敌对/对手/仇视/对立` 无法归一 → 系统无法聚合、无法要求"关系多样性"。
+#: 这里把**高频同义写法**收敛到枚举，是痛点 4 的直接对策。
+_RELATION_KIND_ALIASES: dict[str, RelationKind] = {
+    # 敌意族（旧项目实测最高频的混用）
+    "仇视": RelationKind.NEMESIS,
+    "仇恨": RelationKind.NEMESIS,
+    "宿敌": RelationKind.NEMESIS,
+    "死敌": RelationKind.NEMESIS,
+    "对立": RelationKind.ENEMY,
+    "敌视": RelationKind.ENEMY,
+    "敌对关系": RelationKind.ENEMY,
+    "竞争": RelationKind.RIVAL,
+    "竞争关系": RelationKind.RIVAL,
+    "宿敌关系": RelationKind.NEMESIS,
+    # 亲善族
+    "朋友": RelationKind.ALLY,
+    "好友": RelationKind.ALLY,
+    "同伴": RelationKind.ALLY,
+    "合作": RelationKind.ALLY,
+    "搭档": RelationKind.ALLY,
+    "师父": RelationKind.MASTER_APPRENTICE,
+    "弟子": RelationKind.MASTER_APPRENTICE,
+    "师徒关系": RelationKind.MASTER_APPRENTICE,
+    "兄弟": RelationKind.SWORN,
+    "结义": RelationKind.SWORN,
+    "亲人": RelationKind.BLOOD,
+    "亲属": RelationKind.BLOOD,
+    "父子": RelationKind.BLOOD,
+    "母女": RelationKind.BLOOD,
+    "夫妻": RelationKind.COUPLE,
+    "恋人": RelationKind.COUPLE,
+    "伴侣": RelationKind.COUPLE,
+    # 势力族
+    "同门关系": RelationKind.SAME_SECT,
+    "同宗": RelationKind.SAME_SECT,
+    "成员": RelationKind.MEMBER,
+    "属下": RelationKind.SUBORDINATE,
+    "下属": RelationKind.SUBORDINATE,
+    "上司": RelationKind.SUBORDINATE,
+    "上级": RelationKind.SUBORDINATE,
+    "忠诚": RelationKind.LOYAL,
+    "效忠关系": RelationKind.LOYAL,
+    "叛逃": RelationKind.DEFECTED,
+    "背叛": RelationKind.DEFECTED,
+    "通缉犯": RelationKind.WANTED_BY,
+    "盟友关系": RelationKind.ALLIANCE,
+    "同盟": RelationKind.ALLIANCE,
+    "从属": RelationKind.VASSAL,
+    "世仇关系": RelationKind.FEUD,
+    "恩怨": RelationKind.DEBT,
+    "欠债": RelationKind.DEBT,
+    "誓言": RelationKind.OATH,
+}
+
+
+def normalize_relation_kind(raw: str) -> RelationKind:
+    """把任意写法归一为 `RelationKind`。
+
+    **未知类型抛错而不是静默降级** —— 与 `normalize_entity_kind` 同一条理由：
+    静默降级会让"关系单一"这个痛点**复发而不留痕**
+    （旧项目正是降到"其他"后没人发现）。
+
+    调用方（持久化层）应捕获此异常并**记录告警**，
+    落到 `CUSTOM` 只作为"不中断整章"的容错，而不是当成正常路径。
+    """
+    if not raw:
+        raise ValueError("关系类型为空")
+    key = raw.strip()
+    try:
+        return RelationKind(key)
+    except ValueError:
+        pass
+    if key in _RELATION_KIND_ALIASES:
+        return _RELATION_KIND_ALIASES[key]
+    raise ValueError(
+        f"未登记的关系类型 {raw!r}。请加入 RelationKind 或 "
+        f"_RELATION_KIND_ALIASES（禁止静默降级）"
+    )
+
+
 class RelationStatus(StrEnum):
     ACTIVE = "active"
     CHANGED = "changed"

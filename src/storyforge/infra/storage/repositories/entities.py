@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy import select
@@ -75,8 +76,6 @@ class EntityRepository(Repository[EntityRecord]):
     model = EntityRow
 
     def to_domain(self, row: Any) -> EntityRecord:
-        import json
-
         try:
             aliases = json.loads(row.aliases or "[]")
         except (ValueError, TypeError):
@@ -138,7 +137,92 @@ class EntityRepository(Repository[EntityRecord]):
             )
             return [self.to_domain(r) for r in rows]
 
+    def find_by_id(self, book_id: int, entity_id: int) -> EntityRecord | None:
+        """按主键取实体，**并校验它属于这本书**。
+
+        ★ 为什么必须带 `book_id` 而不是裸 `get(entity_id)`：
+        `entity_resolver` 会返回 `links: {提及名: 实体ID}`，而那个 ID 来自
+        LLM —— **不能假定它指的是本书的实体**。若只按主键取，
+        模型给错 ID 时会把另一本书的实体接进本章关系
+        （静默的跨书串线，比报错危险得多）。
+        """
+        with self.session() as sess:
+            row = sess.get(EntityRow, entity_id)
+            if row is None or int(row.book_id) != int(book_id):
+                return None
+            return self.to_domain(row)
+
+    def all_names(self, book_id: int) -> list[tuple[int, str, list[str]]]:
+        """`(id, 规范名, 别名)` —— `render_known_entities` 的输入格式。
+
+        ★ 这是把**落库的实体**喂回抽取节点的唯一口子。
+        没有它，每章都是"第一次见这个名字"：
+        `known_entities` 恒为空 → 模型反复新建同一实体
+        → 旧项目"同一实体两个名字被建成两行"的复发。
+        """
+        with self.session() as sess:
+            rows = (
+                sess.execute(
+                    select(EntityRow)
+                    .where(EntityRow.book_id == book_id)
+                    .order_by(EntityRow.id)
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                (int(r.id), str(r.canonical_name), self.to_domain(r).aliases)
+                for r in rows
+            ]
+
     # -- 写入 ---------------------------------------------------------------
+
+    def add_alias(self, entity_id: int, alias: str) -> bool:
+        """给实体补一个别名（幂等）。返回是否真的写入了。
+
+        ★ 为什么需要它：抽取节点把"提及名"和"规范名"分开给
+        （`EntityResolutionOut.new_canonical`）—— `李明` 是提及、
+        `李明远` 是规范名。若别名不落库，下次再提到 `李明` 时
+        `find_by_name` 找不到 → 又建一行 → **旧项目"同一实体两个名字
+        被建成两行"的复发**。
+
+        ★ 别名是 JSON 列表，本方法的读改写必须在**同一事务**里
+        （读-改-写跨事务会丢更新：两个 worker 同时补别名时后写的覆盖前者）。
+        """
+        clean = (alias or "").strip()
+        if not clean:
+            return False
+        with self.session() as sess:
+            row = sess.get(EntityRow, entity_id)
+            if row is None:
+                return False
+            if clean == str(row.canonical_name):
+                return False
+            try:
+                current = json.loads(row.aliases or "[]")
+            except (ValueError, TypeError):
+                current = []
+            if not isinstance(current, list):
+                current = []
+            if clean in current:
+                return False
+            current.append(clean)
+            row.aliases = json.dumps(current, ensure_ascii=False)
+            return True
+
+    def touch_last_seen(self, entity_id: int, chapter_no: int) -> None:
+        """更新"最后出现章"（取较大值，**不得回退**）。
+
+        ★ 回退会让"该实体是否还在活跃"判断错乱 —— 与伤势
+        `defer()` 的"不倒退"是同一条纪律。
+        """
+        with self.session() as sess:
+            row = sess.get(EntityRow, entity_id)
+            if row is None:
+                return
+            current = row.last_seen_chapter
+            if current is None or int(chapter_no) > int(current):
+                row.last_seen_chapter = int(chapter_no)
 
     def get_or_create(
         self,

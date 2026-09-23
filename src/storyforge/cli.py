@@ -427,7 +427,25 @@ async def _run_write(args: argparse.Namespace) -> int:
 
     store = _artifacts()
     client = _make_client()
-    deps = ChapterDeps(client=client, store=store)
+
+    # ★ 实体/关系仓储：**可选注入**，与 `_graph_deps` 里伤势仓储同样的纪律
+    #   （数据库不可用不阻断写作，但要**明确说明**未入库，不静默降级）。
+    entities = relations = None
+    try:
+        from storyforge.infra.storage.db import Database
+        from storyforge.infra.storage.repositories import (
+            EntityRepository,
+            RelationRepository,
+        )
+
+        db = Database.open(get_settings().db_path)
+        entities, relations = EntityRepository(db), RelationRepository(db)
+    except Exception as exc:  # noqa: BLE001
+        print(f"（提示：实体/关系仓储未接线（{type(exc).__name__}: {exc}），"
+              f"本章抽取结果**不入库**）", file=sys.stderr)
+
+    deps = ChapterDeps(client=client, store=store,
+                       entities=entities, relations=relations)
     graph = build_chapter_graph(deps)
 
     bible_ref = f"books/{args.book_id}/bible.md"
@@ -457,8 +475,12 @@ async def _run_write(args: argparse.Namespace) -> int:
         )
         status = out.get("status", "?")
         if status == "committed":
+            note = out.get("commit_note", "")
             print(f"OK  {out.get('prose_chars')} 字"
-                  f"{'（已修订）' if out.get('revision_applied') else ''}")
+                  f"{'（已修订）' if out.get('revision_applied') else ''}"
+                  + (f"\n     {note}" if note else ""))
+            for p in (out.get("persist_problems") or [])[:3]:
+                print(f"     ⚠ {p}")
             done += 1
         else:
             print(f"未完成：{status} {out.get('error', '')}")

@@ -27,6 +27,13 @@
     InjuryRepository  → `injuries`（**痛点 1 的落地环**）
 
 其余表（relations / chapters / volumes…）按需再补，不预先铺开。
+
+## ★ 阶段 2 补充：`RelationRepository`
+
+`relations` 是**痛点 2/4（实体·势力追踪混乱 / 人物关系单一）的落地环**。
+在此之前 `entity_relations` 表**零写入路径** —— 抽取节点每章都抽关系，
+但结果只留在内存/产物文件里（`chapter_nodes.py:383`），
+**从未落库**。本仓储接通它。
 """
 
 from storyforge.infra.storage.repositories.base import Repository
@@ -36,6 +43,7 @@ from storyforge.infra.storage.repositories.entities import (
     EntityRepository,
 )
 from storyforge.infra.storage.repositories.injuries import InjuryRepository
+from storyforge.infra.storage.repositories.relations import RelationRepository
 
 __all__ = [
     "Repository",
@@ -44,4 +52,5 @@ __all__ = [
     "EntityRecord",
     "EntityRepository",
     "InjuryRepository",
+    "RelationRepository",
 ]

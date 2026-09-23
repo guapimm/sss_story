@@ -48,10 +48,20 @@ class ChapterDeps:
         client: Any,
         store: ArtifactStore,
         thresholds: Any | None = None,
+        entities: Any | None = None,
+        relations: Any | None = None,
     ) -> None:
         self.client = client
         self.store = store
         self.thresholds = thresholds
+        #: ★ 仓储（可选）。为 None 时提交节点**不入库**，但会如实说明。
+        #:
+        #: 可选而非必填的原因与 `books.py:ChapterDeps.injuries` 完全一致：
+        #: 纯文件模式的测试与产物回放不该被迫建库。
+        #: 但**生产链路必须传** —— 否则实体/关系链路又断在这里
+        #: （这正是本轮修的缺口：抽取跑了、产物写了、**库里一行没有**）。
+        self.entities = entities
+        self.relations = relations
 
 
 # --------------------------------------------------------------------------- #
@@ -107,6 +117,29 @@ def should_review(card: Scorecard, *, is_volume_end: bool = False) -> tuple[bool
         reasons = "、".join(t.value for t in card.triggers)
         return True, f"打分卡触发：{reasons}"
     return False, f"打分卡通过（{card.score:.3f}）"
+
+
+def _known_from_db(deps: ChapterDeps, book_id: int) -> list[tuple[int, str, list[str]]]:
+    """从库里取既有实体，喂给 `resolve_entities`（`known_entities` 的真来源）。
+
+    ## 为什么必须有它
+
+    抽取节点读 `state.get("known_entities", [])` —— 而本图的 State
+    **从来没人写过这个键**（`chapter.py` 的初值里没有）。于是它恒为空列表，
+    后果是每章对模型而言都是"第一次见这个名字"：
+    模型反复给出新规范名 → 反复新建 → 旧项目
+    「同一实体两个名字被建成两行」的复发。
+
+    入库失败**不阻断抽取**（名字归一降级为"全新"而已），但要留痕。
+    """
+    if deps.entities is None:
+        return []
+    try:
+        return deps.entities.all_names(book_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("读既有实体失败：book=%d（本章按全新实体处理）",
+                       book_id, exc_info=True)
+        return []
 
 
 def _prev_texts(store: ArtifactStore, book_id: int, global_no: int) -> list[str]:
@@ -361,15 +394,33 @@ def make_extract_node(deps: ChapterDeps) -> NodeFn:
             problems += validate_scene(scene)
 
         mentions = [e.name for e in (scene.entities if scene else [])]
+        #: 提及名 → 类型（来自 scene 抽取）。`EntityResolutionOut` 不带类型，
+        #: 落库时要用它 —— 否则所有实体都会落成兜底类型，
+        #: "势力实体 0 个"这类聚合统计又会失真。
+        mention_kinds = {
+            e.name: getattr(e, "kind", "") for e in (scene.entities if scene else [])
+        }
         entities = None
         if mentions:
+            # ★ 既有实体从**库里**读，而不是只读 state。
+            #   state 里的 `known_entities` 在本图内**从来没人写**
+            #   （`chapter.py` 的 State 初值里没有它），于是每章对模型
+            #   而言都是"第一次见这个名字" → 反复新建同一实体。
+            known = list(state.get("known_entities", []))
+            if not known and deps.entities is not None:
+                known = _known_from_db(deps, book_id)
             entities, c2 = await resolve_entities(
                 deps.client, book_id=book_id, global_no=global_no,
-                mentions=mentions,
-                known_entities=list(state.get("known_entities", [])),
+                mentions=mentions, known_entities=known,
                 idempotency_key=f"chapter:resolve:{book_id}:{global_no}",
             )
             calls += c2
+            if entities is not None:
+                # 供 commit 落库时取类型（不改 schema，就近挂载）
+                try:
+                    entities.mention_kinds = mention_kinds  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001, S110
+                    pass
 
         relations, c3 = await extract_relations(
             deps.client, book_id=book_id, global_no=global_no, prose=prose,
@@ -384,6 +435,7 @@ def make_extract_node(deps: ChapterDeps) -> NodeFn:
             "scene": scene.model_dump() if scene else None,
             "entities": entities.model_dump() if entities else None,
             "relations": relations.model_dump() if relations else None,
+            "mention_kinds": mention_kinds,
             "problems": problems,
         })
         out: dict[str, Any] = {
@@ -399,11 +451,23 @@ def make_extract_node(deps: ChapterDeps) -> NodeFn:
 
 
 def make_commit_node(deps: ChapterDeps) -> NodeFn:
-    """⑦ 提交 —— **产物完整性校验**；DB 入库待仓储层实现。
+    """⑦ 提交 —— 产物完整性校验 + **实体/关系落库**。
 
-    ★ 本节点在 P4 阶段只校验产物并写结论，**不假装已入库**：
-    `infra/storage/repositories/` 尚未实现，因此 `commit_note` 显式说明。
-    「缺省即不通过」—— 没有入库就不报成功。
+    ## ★ 本节点补的"最后一公里"
+
+    在此之前：抽取节点每章都抽实体与关系、也写了
+    `artifacts/extractions/{章}.json`，但 `entities` /
+    `entity_relations` **两张表零写入** —— `EntityRepository`
+    全仓无生产调用点。本节点接通它。
+
+    入库失败**不判整章失败**（产物已落盘，与
+    `books.py:_mark_heal_planned` 同一条纪律），但**必须留痕**：
+    `commit_note` 会说明入库结果，`persist_problems` 带出问题清单。
+    「缺省即不通过」—— 没入库就不报"已提交到账本"。
+
+    ## 没有仓储时（`deps.entities is None`）
+
+    如实说明"未入库"，**不假装**。纯文件模式（测试/回放）走这条。
     """
     from storyforge.graph.nodes.chapter_writer import load_prose  # noqa: PLC0415
 
@@ -422,14 +486,89 @@ def make_commit_node(deps: ChapterDeps) -> NodeFn:
                 "committed": False, "status": "commit_failed",
                 "error": "缺抽取产物，拒绝提交（记忆账本会与正文脱节）",
             }
-        return {
+
+        out: dict[str, Any] = {
             "committed": True,
             "status": "committed",
             "prose_chars": len(prose.replace(" ", "")),
-            "commit_note": "产物已落盘；DB 入库待 infra/storage/repositories 实现",
         }
 
+        note = persist_chapter_memory(
+            deps, book_id=book_id, global_no=global_no,
+            extraction_ref=str(state["extraction_ref"]), out=out,
+        )
+        out["commit_note"] = note
+        return out
+
     return commit
+
+
+def persist_chapter_memory(
+    deps: ChapterDeps,
+    *,
+    book_id: int,
+    global_no: int,
+    extraction_ref: str,
+    out: dict[str, Any],
+) -> str:
+    """把本章抽取产物写进库，并把结果写回 `out`（供 state 使用）。
+
+    ★ 抽成独立函数（而非塞进 `commit` 闭包）的理由：它需要被单测
+    直接调用（闭包只能通过跑图触发，代价高且失败信息被图吞掉）。
+    """
+    from storyforge.graph.nodes.persist import persist_extraction
+
+    if deps.entities is None or deps.relations is None:
+        # 不假装 —— 明确说明为什么没入库
+        return "产物已落盘；未注入仓储（纯文件模式），DB 未更新"
+
+    try:
+        payload = deps.store.read_json(extraction_ref)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读抽取产物失败：book=%d 章=%d", book_id, global_no, exc_info=True)
+        out["persist_problems"] = [f"读抽取产物失败：{exc}"]
+        return "入库失败（抽取产物不可读），已留痕"
+
+    from storyforge.infra.llm.extraction_schemas import (
+        EntityResolutionOut,
+        RelationExtractionOut,
+    )
+
+    def _parse(model, key):
+        raw = (payload or {}).get(key)
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return model.model_validate(raw)
+        except Exception:  # noqa: BLE001
+            logger.warning("抽取产物 %s 解析失败：book=%d 章=%d",
+                           key, book_id, global_no, exc_info=True)
+            return None
+
+    entities = _parse(EntityResolutionOut, "entities")
+    relations = _parse(RelationExtractionOut, "relations")
+    raw_kinds = (payload or {}).get("mention_kinds")
+    mention_kinds = raw_kinds if isinstance(raw_kinds, dict) else None
+
+    try:
+        res = persist_extraction(
+            entities=entities, relations=relations,
+            book_id=book_id, chapter_no=global_no,
+            entity_repo=deps.entities, relation_repo=deps.relations,
+            mention_kinds=mention_kinds,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 入库失败不阻断提交（产物在），但要留痕
+        logger.warning("实体/关系入库失败：book=%d 章=%d", book_id, global_no,
+                       exc_info=True)
+        out["persist_problems"] = [f"入库异常：{type(exc).__name__}: {exc}"]
+        return f"入库失败（{type(exc).__name__}），产物在盘上"
+
+    out["persisted"] = True
+    out["persist_summary"] = res.summary()
+    if res.problems:
+        out["persist_problems"] = res.problems
+    return f"已入库：{res.summary()}"
 
 
 __all__ = [
