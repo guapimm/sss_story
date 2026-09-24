@@ -260,5 +260,22 @@ requires = { supports_structured_output = true }
 thinking = "allowed"
 reasoning_effort = "high"
 
+# learn 知识点核验（方案 B1）—— ★ tier = "premium" 是**刻意的**。
+#
+# 核验是「防自己批自己」：生成侧走 balanced（mimo-v2.6-flash），
+# 核验侧必须可区分，故取 premium 档（当前落到 mimo-v2.6-pro）。
+# 由 tier 驱动而**不写模型名** —— 决策 D-09（能力声明式路由）：
+# 将来配上 DEEPSEEK_API_KEY，调整候选顺序即可升级到异厂商（B3），
+# **无需改代码**。
+#
+# 预算：`probe_verify_model.py` 实测该模型在 800 token 下 content 为空
+# （token 全烧在 reasoning），4000+ 正常。客户端默认预算取
+# 「模型声明上限」与 cap 的较小值（32768），远超 4000 → **无需**单独设。
+[nodes.learning_verify]
+tier = "premium"
+requires = { supports_structured_output = true }
+thinking = "allowed"
+reasoning_effort = "high"
+
 # 以下为**零 LLM** 节点，仅登记以示不存在模型依赖（防误加 LLM 调用）
 # scorecard_engine / health_scheduler / continuity_checker / structure_gate

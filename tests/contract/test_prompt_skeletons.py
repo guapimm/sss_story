@@ -82,6 +82,14 @@ STRUCTURED_NODES: tuple[tuple[str, str, str, str], ...] = (
      "infra/llm/learning_schemas.py"),
     ("term_mapping", "MAPPING_SYSTEM", "TermMappingBatchOut",
      "infra/llm/learning_schemas.py"),
+    # ── learn 核验节点（方案 B1，2026-09-24）──
+    # ★ 这次也是**主动登记**的。同一类漏洞已栽过**两次**：
+    #   ① 阶段 1 收尾：3 个抽取节点漏登记 → 长期无骨架而契约全绿
+    #      → 真实 `write` 崩在 `state_updates.0`，且有静默数据损坏变体
+    #   ② 2026-09-23：`style_critic` 漏登记 → 同类问题再度发生
+    # 新增任何带 JSON 输出的节点都必须同时登记到这里。
+    ("learning_verify", "VERIFY_SYSTEM", "VerificationOut",
+     "infra/llm/learning_schemas.py"),
 )
 
 #: 骨架里必须出现的字段（schema 必填字段）——由测试动态补全，

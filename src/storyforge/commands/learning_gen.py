@@ -46,6 +46,49 @@ def has_api_key() -> bool:
     )
 
 
+def _report_verification(vout, expected: int) -> str:
+    """把核验结果渲染成**用户可读**的一行 + 明细（草稿 §4 的可视化要求）。
+
+    ## 为什么必须显式报告（而不是静默记个数）
+
+    用户要求「全流程可视化，避免黑盒」。核验是**唯一**能回答
+    "知识点是不是编的"的环节 —— 若它静默通过，用户无从判断地图能否信。
+
+    ## 两条硬门禁（草稿 §4.3）
+
+      · 严格：准确率 ≥85%
+      · 硬门禁：`unsupported` **不得连续 3 条**（集中幻觉比分散更危险）
+
+    ⚠️ 条数不符也要报：模型漏判等于**部分未核验**，
+    不能因为"整体准确率高"就掩盖过去。
+    """
+    counts = vout.counts()
+    total = len(vout.verdicts)
+    acc = vout.accuracy()
+    run = vout.consecutive_unsupported()
+    unknown = counts.get("unknown", 0)
+
+    print(f"  🔍 知识准确性核验（独立模型档位）："
+          f"准确率 {acc:.0%}（{counts['supported']} 有据 / "
+          f"{counts['inferred']} 可推 / {counts['unsupported']} 无据）")
+    if total != expected:
+        print(f"    ⚠ 模型只判了 {total}/{expected} 条 —— "
+              f"**部分知识点未核验**")
+    if unknown:
+        print(f"    ⚠ {unknown} 条判定无法识别（既非三态之一）")
+    bad = [v for v in vout.verdicts if v.verdict == "unsupported"]
+    for v in bad[:3]:
+        reason = (v.reason or "").strip()[:40]
+        print(f"    ✗ {v.point}：{reason or '（无理由）'}")
+    if len(bad) > 3:
+        print(f"    …… 另 {len(bad) - 3} 条无据")
+    if run >= 3:
+        print(f"    ★ 硬门禁触发：连续 {run} 条无据 —— 集中幻觉，建议重跑研究")
+    elif acc < 0.85 and total:
+        print(f"    ⚠ 未达严格线 85%（草稿 §4.3）")
+    return f"准确率 {acc:.0%}（{total} 条已核验）"
+
+
 def resolve_evidence(
     idxs: list[int], snippets: list[dict],
 ) -> tuple[tuple[str, ...], str, list[int]]:
@@ -95,16 +138,20 @@ def resolve_evidence(
 async def gen_with_llm(
     *, topic: str, genre: str, scale: str, snippets: list[dict],
     shortfall: str, book_id: int,
-) -> tuple[list[KnowledgePoint], list[TermMapping], int]:
-    """LLM 路径：研究资料 → 学习地图 →（缺口自检）→ 平替修辞。
+) -> tuple[list[KnowledgePoint], list[TermMapping], int, str]:
+    """LLM 路径：研究资料 → 学习地图 →（缺口自检）→（核验）→ 平替修辞。
 
-    返回 `(知识点, 平替修辞, LLM 调用次数)`。
+    返回 `(知识点, 平替修辞, LLM 调用次数, 核验摘要)`。
+
+    `核验摘要` 是**用户可见的准确性结论**（方案 B1）。空字符串表示
+    未核验 —— 调用方应据实展示，不要当成"通过"。
     """
     from storyforge.config import get_settings
     from storyforge.graph.nodes.learning import (
         check_gaps,
         generate_learning_map,
         generate_term_mappings,
+        verify_learning_map,
     )
     from storyforge.infra.llm.client import ClientConfig, LLMClient
     from storyforge.infra.llm.transport import make_transport
@@ -177,6 +224,30 @@ async def gen_with_llm(
         print(f"  ⚠ {len(bad_index)} 个知识点的依据编号**越界**（模型乱标）："
               f"{'、'.join(bad_index[:5])}")
 
+    # ③.5 ★ 知识准确性核验（方案 B1，草稿 §4）—— 防"自己批自己"
+    #
+    # 用**另一个模型档位**（premium：v2.6-pro）独立判断"这条知识点
+    # 是否真被资料支撑"。★ 这是 2-6「知识准确性」验收项的唯一数据来源 ——
+    # 没有它，该系统分不清"真知识"与"模型编的"。
+    #
+    # ⚠️ 核验失败**不让整轮失败**（地图已生成、溯源已回填），
+    #    但必须**显式说明未核验** —— 「缺省即不通过」，不假装已核验。
+    verify_note = ""
+    try:
+        verdicts_in = [(p.name, p.summary) for p in points]
+        vout, c_verify = await verify_learning_map(
+            client, topic=topic, points=verdicts_in, snippets=snippets,
+            book_id=book_id,
+            idempotency_key=f"learn:verify:{book_id}:{topic}",
+        )
+        calls += c_verify
+        if vout is not None:
+            verify_note = _report_verification(vout, len(points))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠ 核验未完成（{type(exc).__name__}: {str(exc)[:80]}）"
+              f"—— 知识点准确性**未经验证**")
+        verify_note = f"核验失败（{type(exc).__name__}）"
+
     # ④ 平替修辞（带种子当 few-shot —— 用户决策"流派根据已有的来"）
     seed = load_mapping_seed(genre)
     terms = [p.name for p in points]
@@ -203,7 +274,7 @@ async def gen_with_llm(
             maps.append(TermMapping(term=t, replacement=r,
                                     rationale=mp.rationale.strip()))
 
-    return points, maps, calls
+    return points, maps, calls, verify_note
 
 
 def points_from_snippets(snippets: list[dict], *, topic: str) -> list[KnowledgePoint]:

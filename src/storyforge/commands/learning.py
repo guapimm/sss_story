@@ -343,11 +343,12 @@ def _do_gen(args: argparse.Namespace) -> int:
     mappings: list[TermMapping] = []
     used_seed = False
     calls = 0
+    verify_note = ""
 
     if use_llm:
         print(f"用 LLM 生成学习地图与平替修辞 …（研究资料 {len(raw_snippets)} 条）")
         try:
-            points, mappings, calls = asyncio.run(
+            points, mappings, calls, verify_note = asyncio.run(
                 gen_with_llm(
                     topic=args.topic, genre=args.genre, scale=args.scale,
                     snippets=raw_snippets, shortfall=shortfall, book_id=book_id,
@@ -383,6 +384,9 @@ def _do_gen(args: argparse.Namespace) -> int:
     else:
         print(f"  平替修辞  ：{len(m.mappings)} 条（LLM 生成，待 L-2 逐条确认）")
         print(f"  LLM 调用  ：{calls} 次")
+        # ★ 核验结论必须落到用户眼前（它决定"地图能不能信"）。
+        #   未核验时**如实说未核验**，不显示成通过。
+        print(f"  准确性    ：{verify_note or '★ 未核验'}")
     if archived:
         print(f"  存档      ：{archived}")
     if shortfall:

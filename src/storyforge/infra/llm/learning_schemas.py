@@ -233,6 +233,147 @@ class TermMappingBatchOut(BaseModel):
     mappings: list[TermMappingOut] = Field(default_factory=list)
 
 
+#: 核验三态（方案 B1，`doc/learn-验收标准-草稿.md` §4.1）。
+#:
+#: ★ 三态而非二态的原因：**教学需要"把资料讲透"**，
+#: 合理推演是必要的（由「点茶用茶筅」推出「茶筅是核心器具」）。
+#: 一刀切要求"逐字有据"会让地图退化成资料摘抄。
+#: 故 `inferred` 必须与 `unsupported` 分开 —— 前者计入通过（但标记），
+#: 后者计入失败（疑似幻觉）。
+VERDICTS: tuple[str, ...] = ("supported", "inferred", "unsupported")
+
+
+class PointVerdictOut(BaseModel):
+    """单条知识点的核验判定。"""
+
+    point: str = Field(description="知识点名（照抄待核验列表里的名字）")
+    verdict: str = Field(
+        description="三态之一：supported（资料有直接依据）/ "
+        "inferred（可由资料合理推得）/ unsupported（资料里找不到依据）"
+    )
+    reason: str = Field(default="", description="判定理由（≤50 字，须指向资料）")
+    evidence_index: list[int] = Field(
+        default_factory=list,
+        description="支撑该判定的资料编号（从 1 开始；unsupported 留空）",
+    )
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def _normalize_verdict(cls, v: Any) -> Any:
+        """归一：大小写、空格、以及模型可能给的中文/近义写法。
+
+        ★ 但**不把未知值硬塞成 supported** —— 那会把"判不了"伪装成"通过"，
+        正是本项目最忌讳的"给假绿"。未知值原样保留，由节点层显式暴露。
+        """
+        if v is None:
+            return ""
+        s = str(v).strip().lower()
+        aliases = {
+            "支持": "supported", "有据": "supported", "有依据": "supported",
+            "ok": "supported", "yes": "supported", "true": "supported",
+            "推断": "inferred", "推论": "inferred", "推得": "inferred",
+            "implicit": "inferred", "implied": "inferred",
+            "不支持": "unsupported", "无据": "unsupported", "无依据": "unsupported",
+            "no": "unsupported", "false": "unsupported",
+            "hallucination": "unsupported", "编造": "unsupported",
+        }
+        return aliases.get(s, s)
+
+    @field_validator("evidence_index", mode="before")
+    @classmethod
+    def _normalize_evidence_index(cls, v: Any) -> Any:
+        """与 `KnowledgePointOut._normalize_index` 同口径（输入宽容）。"""
+        if v is None or v == "":
+            return []
+        if isinstance(v, (int, str)) or not isinstance(v, (list, tuple)):
+            v = [v]
+        out: list[int] = []
+        for x in v:
+            try:
+                out.append(int(str(x).strip()))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+
+class VerificationOut(BaseModel):
+    """知识点核验结果（方案 B1）。
+
+    ## 为什么要独立于生成（防"自己批自己"）
+
+    核验侧必须是**可区分的第二个判断者**。当前约束（2026-09-23）：
+
+      · `DEEPSEEK_API_KEY` 未配置 → 跨厂商（B3）**做不了**
+      · 故落 **B1：同厂不同档位**（`mimo-v2.6-pro` 核验 + 独立 prompt）
+
+    ★ **B1 不是强隔离**（同代模型可能共享训练数据与偏见）。
+    故判据里保留**人工抽检**作为最终防线，不能只信自动核验。
+
+    ## 与 `FactVerifier` Protocol 的关系
+
+    `modes/protocols.py` 的 `FactVerifier` 是**契约**（`verify(claims) -> results`），
+    本类是其 learn 侧实现的输出形状。Protocol 的通用化留待需要时再做。
+    """
+
+    verdicts: list[PointVerdictOut] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_shape(cls, data: object) -> object:
+        """★ 兼容裸列表与单条对象（与 `GapCheckOut` 同原则：归一，不拒绝）。"""
+        if isinstance(data, list):
+            return {"verdicts": data}
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        v = d.get("verdicts")
+        if isinstance(v, dict):
+            d["verdicts"] = [v]
+        elif v is None:
+            for alt in ("判定", "结果", "results", "checks", "verdict"):
+                if alt in d:
+                    got = d.pop(alt)
+                    d["verdicts"] = got if isinstance(got, list) else [got]
+                    break
+        return d
+
+    # -- 统计 ---------------------------------------------------------------
+
+    def counts(self) -> dict[str, int]:
+        """三态计数（**未知判定单独计**，不混入 supported）。"""
+        out = dict.fromkeys(VERDICTS, 0)
+        for v in self.verdicts:
+            if v.verdict in out:
+                out[v.verdict] += 1
+            else:
+                out["unknown"] = out.get("unknown", 0) + 1
+        return out
+
+    def accuracy(self) -> float:
+        """准确率 = (supported + inferred) / 总数（草稿 §4.3 口径）。
+
+        空结果返回 0.0 —— 不返回 1.0：**没有判定不等于全部通过**
+        （假绿是本项目反复吃过亏的形态）。
+        """
+        total = len(self.verdicts)
+        if total == 0:
+            return 0.0
+        c = self.counts()
+        return (c["supported"] + c["inferred"]) / total
+
+    def consecutive_unsupported(self) -> int:
+        """最长**连续** `unsupported` 段（草稿 §4.3 硬门禁：不得连续 3 条）。
+
+        ★ 连续与总数是两回事：集中幻觉比分散更危险
+        （连续 3 条说明模型在某个方向上整段编造，而非个别失误）。
+        """
+        best = cur = 0
+        for v in self.verdicts:
+            cur = cur + 1 if v.verdict == "unsupported" else 0
+            best = max(best, cur)
+        return best
+
+
 # --------------------------------------------------------------------------- #
 # prompt 骨架（★ 必须带 JSON 骨架 —— 由 test_prompt_skeletons.py 强制）
 # --------------------------------------------------------------------------- #
@@ -366,14 +507,55 @@ MAPPING_SYSTEM = """你是「平替修辞」设计师。把知识点术语转换
 ⚠️ 示例只示范**粒度与风格**，不要照抄 —— 说法必须切合本书的知识点。"""
 
 
+#: 知识点核验（方案 B1）。**独立于 `LEARNING_MAP_SYSTEM`** ——
+#: 这是"防自己批自己"的第一层（第二层是换模型档位 `mimo-v2.6-pro`）。
+#:
+#: ★ 核验侧**看不到生成过程**：只给「研究资料 + 生成的知识点」，
+#: 不给"生成时用的 prompt"，避免它顺着生成者的思路走。
+VERIFY_SYSTEM = """你是事实核查员。判断下面每条知识点**是否被给出的研究资料支撑**。
+
+## 判定标准（三态，只能选一个）
+
+- `supported`：资料里有**直接依据**（能找到对应句子）
+- `inferred` ：资料未直说，但可由资料**合理推得**（教学需要讲透，合理推演允许）
+- `unsupported`：资料里**找不到任何依据**（疑似编造）
+
+⚠️ `inferred` **不是** `unsupported` —— 不要把"资料没逐字写"当成编造。
+⚠️ 但 `unsupported` 也不要放过：**没有依据的知识点会被写进小说**，
+读者会把编造当知识学。
+
+## 输出骨架（字段名照抄）
+
+```json
+{"verdicts": [
+  {"point": "知识点名（照抄下面的名字）", "verdict": "supported",
+   "reason": "资料 [2] 明确写了……", "evidence_index": [2]}
+]}
+```
+
+## 硬性要求
+
+1. **每条知识点都要给判定**，一条不漏（数量必须与待核验列表一致）。
+2. `verdict` 只能是 `supported` / `inferred` / `unsupported` 三者之一。
+3. `point` **照抄**待核验列表里的名字，不要改写。
+4. `evidence_index` 填资料编号（从 1 开始）；判 `unsupported` 时留空数组。
+5. `reason` ≤50 字，判 `unsupported` 时说明"资料里没有提到什么"。
+6. **判定要严格**：宁可标 `inferred`，也不要为了让人满意而标 `supported`。
+   看不出依据就用 `unsupported` —— 你的职责是**查出问题**，不是让人通过。"""
+
+
 __all__ = [
     "KnowledgePointOut",
     "LearningModuleOut",
     "LearningMapOut",
     "GapCheckOut",
+    "PointVerdictOut",
     "TermMappingOut",
     "TermMappingBatchOut",
+    "VERDICTS",
+    "VerificationOut",
     "LEARNING_MAP_SYSTEM",
+    "VERIFY_SYSTEM",
     "GAP_CHECK_SYSTEM",
     "MAPPING_SYSTEM",
 ]

@@ -39,9 +39,11 @@ from storyforge.infra.llm.learning_schemas import (
     GAP_CHECK_SYSTEM,
     LEARNING_MAP_SYSTEM,
     MAPPING_SYSTEM,
+    VERIFY_SYSTEM,
     GapCheckOut,
     LearningMapOut,
     TermMappingBatchOut,
+    VerificationOut,
 )
 from storyforge.infra.llm.prompt_builder import PromptLayers
 
@@ -178,6 +180,64 @@ async def check_gaps(
     return out, (0 if call.from_cache else 1)
 
 
+async def verify_learning_map(
+    client,
+    *,
+    topic: str,
+    points: list[tuple[str, str]],
+    snippets: list[dict],
+    book_id: int = 0,
+    idempotency_key: str | None = None,
+) -> tuple[VerificationOut | None, int]:
+    """核验知识点**是否被研究资料支撑**（方案 B1，草稿 §4）。
+
+    ## 输入为什么是 `(名字, 说明)` 而不是 `LearningMapOut`
+
+    核验侧**不该看到生成过程** —— 只给「研究资料 + 待核验的知识点」。
+    传 `LearningMapOut` 会把模块结构、difficulty、dependencies 一并带过去，
+    等于把生成者的思路喂给核验者（削弱独立性）。
+
+    ## 为什么资料要**重新编号**
+
+    ★ 这是本函数最容易写错的地方：生成侧 prompt 给资料编了 `[N]` 号，
+    核验侧的 prompt 里却是**另一段文本**。若两边都用"第 N 条"而编号规则
+    不一致，模型回的 `evidence_index` 会**指向错误的资料** ——
+    而且是静默错（看起来有编号、其实对不上）。
+
+    故这里用 `_snippet_block` **重新渲染并重新编号**，
+    保证「核验 prompt 里的编号」与「模型回的编号」在同一坐标系里。
+
+    ## 返回
+
+    `(核验结果, 实际调用次数)`；结果可为 `None`（空输出，由调用方决定处置）。
+    """
+    numbered = _snippet_block(snippets)
+    point_lines = "\n".join(
+        f"{i}. {name}" + (f" —— {summary}" if summary else "")
+        for i, (name, summary) in enumerate(points, 1)
+    )
+    user = (
+        f"学习主题：{topic}\n\n"
+        f"## 研究资料\n\n{numbered or '（无资料）'}\n\n"
+        f"## 待核验的知识点（共 {len(points)} 条）\n\n{point_lines}\n\n"
+        f"请逐条判定，共输出 {len(points)} 条 verdicts。"
+    )
+    layers = _layers(VERIFY_SYSTEM, user)
+    messages = layers.assemble()
+    out, call = await client.complete_structured(
+        node="learning_verify",
+        system=messages["system"],
+        user=messages["user"],
+        schema=VerificationOut,
+        prompt_prefix=layers.cacheable_prefix(),
+        context=CallContext(
+            node="learning_verify", book_id=book_id or None,
+            idempotency_key=idempotency_key,
+        ),
+    )
+    return out, (0 if call.from_cache else 1)
+
+
 async def generate_term_mappings(
     client,
     *,
@@ -241,5 +301,6 @@ __all__ = [
     "SCALE_PROFILE",
     "generate_learning_map",
     "check_gaps",
+    "verify_learning_map",
     "generate_term_mappings",
 ]
