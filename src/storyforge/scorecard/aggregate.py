@@ -233,7 +233,9 @@ def _ge(value: float | None, limit: float) -> bool | None:
 
 
 def build_dimensions(
-    lit: LiteralMetrics, st: StructuralMetrics | None, th: Thresholds
+    lit: LiteralMetrics, st: StructuralMetrics | None, th: Thresholds,
+    *,
+    specs: tuple[Any, ...] | None = None,
 ) -> list[DimensionScore]:
     """把字面层与结构层指标翻译成维度分数。
 
@@ -241,131 +243,24 @@ def build_dimensions(
     触发由 `collect_triggers` 用 hard 层单独判。这是双层设计的关键：
     若维度判定直接触发审校，47/47 章都会触发（实测），闸门失去筛选意义。
 
-    `detail` 里同时给出 hard 与 target 两个水位，便于人工判读。
-    """
-    dims: list[DimensionScore] = [
-        _dim(
-            "dialogue_ratio",
-            lit.dialogue_ratio,
-            _ge(lit.dialogue_ratio, th.target_dialogue_ratio),
-            weight=1.5,
-            detail=(
-                f"目标 ≥{th.target_dialogue_ratio}，硬底线 ≥{th.hard_dialogue_floor}"
-                f"（旧基线 p50=0.106）"
-            ),
-        ),
-        _dim(
-            "cross_chapter_overlap",
-            lit.cross_chapter_overlap,
-            _le(lit.cross_chapter_overlap, th.target_cross_overlap),
-            weight=1.5,
-            detail=(
-                f"目标 ≤{th.target_cross_overlap}，硬上限 ≤{th.hard_cross_overlap}"
-                f"（旧基线 p50=0.099）"
-            ),
-        ),
-        _dim(
-            "intra_redundancy",
-            lit.intra_redundancy,
-            _le(lit.intra_redundancy, th.target_intra_redundancy),
-            weight=1.0,
-            detail=f"目标 ≤{th.target_intra_redundancy}（旧基线 p50=0.062）",
-        ),
-        _dim(
-            "cliche_hits",
-            float(len(lit.cliches)),
-            _le(float(len(lit.cliches)), float(th.target_cliche_hits)),
-            weight=1.0,
-            detail=f"目标 ≤{th.target_cliche_hits}",
-        ),
-        _dim(
-            "simile_count",
-            float(lit.simile_count),
-            _le(float(lit.simile_count), float(th.target_simile_count)),
-            weight=1.0,
-            detail=f"目标 ≤{th.target_simile_count}（用户痛点：比喻太多）",
-        ),
-        _dim(
-            "strong_emotion_words",
-            float(lit.strong_emotion_words),
-            _le(float(lit.strong_emotion_words), float(th.target_strong_emotion)),
-            weight=0.8,
-            detail=f"目标 ≤{th.target_strong_emotion}（旧 writer 规则）",
-        ),
-        _dim(
-            "sentence_len_cv",
-            lit.sentence_len_cv,
-            _ge(lit.sentence_len_cv, th.target_sentence_cv),
-            weight=0.7,
-            detail=f"目标 ≥{th.target_sentence_cv}（旧基线 p50=0.651）",
-        ),
-        _dim(
-            "chars",
-            float(lit.chars),
-            _ge(float(lit.chars), float(th.target_min_chars)),
-            weight=1.2,
-            detail=f"目标 ≥{th.target_min_chars}，硬底线 ≥{th.hard_min_chars}",
-        ),
-        _dim(
-            "not_time_skip_start",
-            None,
-            not lit.starts_with_time_skip,
-            weight=0.5,
-            detail="章首不用时间硬切",
-        ),
-    ]
+    ## ★ 2026-09-24 改为**表驱动**（审计 §4.4 第 8 条）
 
-    # 章末类型：omen（贴片式假钩子）与 time_skip 是问题。
-    # ★ summary **只观测不判罚** —— 旧项目实测 summary=0/time_skip=0，
-    #   说明「不要总结式结尾」的规则本就生效，不是硬伤。
-    ending_ok = lit.ending not in (EndingPattern.OMEN, EndingPattern.TIME_SKIP)
-    dims.append(
-        _dim(
-            "ending_pattern",
-            None,
-            ending_ok,
-            weight=0.8,
-            detail=f"章末={lit.ending.value}（omen/time_skip 不合格）",
-        )
+    原实现把 14 个维度的名字、权重、判定**硬编码在函数体**，
+    于是 learn 想用自己的维度集合只能**复制整个模块**。
+    现改为读 `dimensions.STORY_DIMENSIONS`（默认）或调用方传入的 spec 表。
+
+    ★ **story 行为零改变**：`STORY_DIMENSIONS` 逐条对应原硬编码逻辑，
+    并由 `scripts/capture_scorecard_parity.py` 的快照 diff 证明。
+    `specs=` 参数是 learn 的入口（见 `scorecard/learn.py`）。
+    """
+    from storyforge.scorecard.dimensions import (
+        STORY_DIMENSIONS,
+        build_dimensions_from_specs,
     )
 
-    if st is not None:
-        dims.extend(
-            [
-                _dim(
-                    "outline_adherence",
-                    st.outline_adherence,
-                    _ge(st.outline_adherence, th.target_outline_adherence),
-                    weight=2.0,
-                    detail=(
-                        f"目标 ≥{th.target_outline_adherence}，"
-                        f"硬底线 ≥{th.hard_outline_adherence}"
-                    ),
-                ),
-                _dim(
-                    "hook_landed",
-                    None,
-                    st.hook_landed,
-                    weight=1.2,
-                    detail="章末落在规划钩子",
-                ),
-                _dim(
-                    "state_consistency",
-                    None,
-                    not st.has_state_violation,
-                    weight=1.5,
-                    detail="无状态矛盾",
-                ),
-                _dim(
-                    "unsupported_entities",
-                    float(len(st.unsupported_entities)),
-                    len(st.unsupported_entities) == 0,
-                    weight=0.6,
-                    detail="无无依据新名词",
-                ),
-            ]
-        )
-    return dims
+    return build_dimensions_from_specs(
+        specs if specs is not None else STORY_DIMENSIONS, lit, st, th
+    )
 
 
 # --------------------------------------------------------------------------- #

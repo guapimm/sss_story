@@ -81,18 +81,94 @@ def cmd_arch_check(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 
 
+def _score_learn(texts: list[str], *, window: int) -> list:
+    """用 learn 打分卡给教学章打分（零 LLM）。
+
+    ## 平替修辞维度需要**已确认的映射表**
+
+    `term_substitution` / `bare_term` 两个维度必须知道"哪些术语该被替换"。
+    数据来源是本书的 `learning/map.json`（L-1/L-2 已确认的部分）。
+
+    ⚠️ **取不到映射表时不假装**：`LearnMetrics` 留空 →
+    相关维度变成 `None`（**无法评估**，记 0 分）而不是"通过"。
+    这与 `VerificationOut.accuracy()` 的空结果口径一致 ——
+    本项目反复吃亏于"空结果当成通过"的假绿。
+
+    ★ 打印一行说明为什么那些维度无法评估，而不是静默给 0 分
+    （静默给 0 会让"没数据"看起来像"质量差"）。
+    """
+    from storyforge.scorecard.learn import (
+        LearnMetrics,
+        count_bare_terms,
+        count_term_usage,
+        evaluate_learn,
+    )
+
+    mappings: list[tuple[str, str]] = []
+    try:
+        from storyforge.infra.storage.artifacts import ArtifactStore
+
+        store = _artifacts()
+        # 遍历已有书目录找 learning/map.json（一期无 book_id 参数时的兜底）
+        for p in sorted((store.root / "books").glob("*/learning/map.json")):
+            import json as _json
+
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            for m in data.get("mappings") or []:
+                if m.get("accepted") is True and m.get("term"):
+                    mappings.append(
+                        (str(m["term"]), str(m.get("replacement") or ""))
+                    )
+            if mappings:
+                print(f"平替修辞：用书 {p.parent.parent.name} 的 "
+                      f"{len(mappings)} 条**已确认**映射")
+                break
+    except Exception as exc:  # noqa: BLE001
+        print(f"（提示：读取平替修辞表失败（{type(exc).__name__}）—— "
+              f"平替相关维度将记为「无法评估」）")
+
+    if not mappings:
+        print("（提示：没有**已确认**的平替修辞映射 → "
+              "`term_substitution` / `bare_term` 两维记「无法评估」）")
+
+    cards = []
+    for i, t in enumerate(texts):
+        bare, _hits = count_bare_terms(t, mappings)
+        hit, expected = count_term_usage(t, mappings)
+        cards.append(evaluate_learn(
+            t, global_no=i + 1,
+            prev_texts=texts[max(0, i - window):i],
+            metrics=LearnMetrics(
+                bare_term_hits=bare,
+                substitution_hits=hit, substitution_expected=expected,
+                # ⚠️ 知识点/解释/递进/复习四类的输入来自**教学账本与学习地图**，
+                #    需章节与知识点的对应关系（步骤 ⑥ 才建立）→ 一期留空，
+                #    对应维度记「无法评估」，并已在上方提示。
+            ),
+        ))
+    return cards
+
+
 def cmd_score(args: argparse.Namespace) -> int:
     """对目录下的章节文本打分（零 LLM、可复现）。
 
     用法：
         storyforge score --dir <章节目录> --pattern "v1-*.txt"
         storyforge score --dir <目录> --baseline     # 与旧 baseline 对比
+        storyforge score --dir <目录> --learn        # ★ 用 learn（知识小说）打分卡
+
+    ## ★ `--learn` 为什么存在（实测驱动）
+
+    用 story 打分卡评**教学章**会**误杀**：`dialogue_low` 是硬触发，
+    而教学章「不要对话」才是正确写法（`score=0.51 / passed=False`）。
+    那是**维度集合错配**，不是调参问题 —— 故 learn 有自己的卡。
+
+    两种卡的**度量原语共享**（跨章重叠/章内冗余/对话/比喻），
+    但**维度集合与方向不同**（对话在 story 是下限、在 learn 是上限）。
     """
     import statistics
     from collections import Counter
     from pathlib import Path as _Path
-
-    from storyforge.scorecard import evaluate
 
     d = _Path(args.dir)
     if not d.exists():
@@ -105,10 +181,18 @@ def cmd_score(args: argparse.Namespace) -> int:
 
     texts = [f.read_text(encoding="utf-8", errors="ignore") for f in files]
     window = get_settings().scorecard.cross_window
-    cards = [
-        evaluate(t, global_no=i + 1, prev_texts=texts[max(0, i - window) : i])
-        for i, t in enumerate(texts)
-    ]
+
+    if getattr(args, "learn", False):
+        cards = _score_learn(texts, window=window)
+        print("打分卡：**learn**（知识小说）—— 维度集合与 story 不同")
+    else:
+        from storyforge.scorecard import evaluate
+
+        cards = [
+            evaluate(t, global_no=i + 1, prev_texts=texts[max(0, i - window) : i])
+            for i, t in enumerate(texts)
+        ]
+        print("打分卡：story（小说）")
 
     print(f"章节数：{len(cards)}")
     scores = [c.score for c in cards]
@@ -560,6 +644,11 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--dir", required=True, help="章节目录")
     sc.add_argument("--pattern", default="*.txt", help="文件名通配（默认 *.txt）")
     sc.add_argument("--json", help="把逐章明细写入该 JSON 文件")
+    sc.add_argument(
+        "--learn", action="store_true",
+        help="★ 用 learn（知识小说）打分卡：维度集合与 story 不同"
+             "（教学章「不要对话」是正确写法，story 卡会误杀）",
+    )
     sc.set_defaults(func=cmd_score)
 
     bl = sub.add_parser("baseline", help="复现旧项目 baseline（验证口径一致性）")

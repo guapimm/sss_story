@@ -718,6 +718,24 @@ class TriggerReason(StrEnum):
     # ── 总分触发 ──
     LOW_SCORE = "low_score"
 
+    # ── ★ learn（知识小说）专属触发（2026-09-24，阶段 2-5）──
+    #:
+    #: ★ 为什么必须新增而不是复用 story 的项：复用会让**触发名说谎** ——
+    #: 例如把"平替修辞命中率过低"记成 `CLICHE_HEAVY`（套话密集），
+    #: 报告里看到的理由与实际原因不符。本项目明令禁止这类误导
+    #: （见 `_summarize_validation_error` 的同类教训：
+    #: 「报表丢掉了结构化的 code，改用措辞猜」）。
+    #:
+    #: ★ 也**不**使用 `DIALOGUE_LOW` / `GOLDEN_THREE` / `ENDING_OMEN`：
+    #:   · `DIALOGUE_LOW` —— 教学章对话少是**正确**写法（实测误杀源）
+    #:   · `GOLDEN_THREE` —— 网文留存策略，教学章无此概念
+    #:   · `ENDING_OMEN` —— 教学章的总结收尾是**必需**，不是假钩子
+    BARE_TERM = "bare_term"                  # 正文直出原术语（出戏）
+    SUBSTITUTION_LOW = "substitution_low"    # 平替修辞命中率过低
+    LOW_DENSITY = "low_density"              # 知识密度过低（灌水）
+    EXPLANATION_SHALLOW = "explanation_shallow"  # 只提名词不讲透
+    REVIEW_MISSED = "review_missed"          # 到期复习点未被讲到
+
 
 __all__ = [
     "BookMode",
