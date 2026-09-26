@@ -117,3 +117,73 @@ def test_flows_is_offline_and_free() -> None:
         assert forbidden not in src, (
             f"`cmd_flows` 里出现了 {forbidden!r} —— 该命令必须离线且零 LLM"
         )
+
+
+# ---------------------------------------------------------------------------
+# PG-1C（B-8）：资源缺失必须大声报错，不得伪装成"目录为空"退出码 0
+# ---------------------------------------------------------------------------
+
+
+def test_flows_missing_resource_exits_nonzero(tmp_path, monkeypatch, capsys) -> None:
+    """★ 命名空间目录**不存在**（安装不完整）→ 退出码 2 + stderr 明确报错。
+
+    PG-0 实测（B-8）：安装态 `flows -n xianxia` 打印"（目录为空或不存在）"
+    且**退出码 0** —— 把损坏伪装成正常，是本项目明令禁止的静默降级。
+    数据层 `load_namespace` 的 `{}` 语义不动（doc/11 §2.2），
+    用户可见层在这里区分两种状态。
+    """
+    from storyforge.config import reset_settings
+
+    monkeypatch.setenv("STORYFORGE_CONFIG_DIR", str(tmp_path / "no_such_config"))
+    reset_settings()  # get_settings() 有缓存，不重置会读到上一个测试的 config_dir
+    try:
+        rc = cmd_flows(_Args(namespace="xianxia"))
+        assert rc == 2, "资源缺失竟返回 0 —— B-8 回归（静默降级）"
+        err = capsys.readouterr().err
+        assert "资源缺失" in err
+        assert "xianxia" in err
+    finally:
+        reset_settings()
+
+
+def test_flows_all_reports_missing_when_any_namespace_absent(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """`-n all` 时任一命名空间缺失都要报错退出码 2（两个都是必需资源）。"""
+    from storyforge.config import reset_settings
+
+    cfg = tmp_path / "cfg"
+    (cfg / "flows" / "tropes").mkdir(parents=True)  # tropes 在，xianxia 缺
+    monkeypatch.setenv("STORYFORGE_CONFIG_DIR", str(cfg))
+    reset_settings()
+    try:
+        rc = cmd_flows(_Args(namespace="all"))
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "xianxia" in err and "资源缺失" in err
+    finally:
+        reset_settings()
+
+
+def test_flows_empty_dir_is_legal_and_printed_as_such(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """目录**存在但为空** → 合法状态（全新 clone 未填充）→ 退出码 0。
+
+    与上一条共同把两种状态分开钉死：缺失≠为空（doc/11 §2.2 的语义在
+    用户可见层的对应形态）。
+    """
+    from storyforge.config import reset_settings
+
+    cfg = tmp_path / "cfg"
+    (cfg / "flows" / "xianxia").mkdir(parents=True)
+    monkeypatch.setenv("STORYFORGE_CONFIG_DIR", str(cfg))
+    reset_settings()
+    try:
+        rc = cmd_flows(_Args(namespace="xianxia"))
+        assert rc == 0
+        out, err = capsys.readouterr()
+        assert "目录存在但为空" in out
+        assert "资源缺失" not in out + err
+    finally:
+        reset_settings()

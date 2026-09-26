@@ -55,7 +55,7 @@ def cmd_flows(args: argparse.Namespace) -> int:
       · `tropes`   16 个通用叙事套路（story 用，已被题材引用）
       · `xianxia`  25 个修仙流派（learn 用，可多选）
     """
-    from storyforge.modes.flows import NAMESPACES, load_flow, load_namespace
+    from storyforge.modes.flows import NAMESPACES, flows_dir, load_flow, load_namespace
 
     ns = args.namespace
     if ns == "all":
@@ -63,13 +63,28 @@ def cmd_flows(args: argparse.Namespace) -> int:
     else:
         namespaces = [ns]
 
+    missing = False
     for i, name in enumerate(namespaces):
         if i:
             print()
+        # ★ B-8（PG-1C，doc/11 §5.1）：区分「资源缺失」与「命名空间为空」——
+        # 数据层 load_namespace 的 {} 语义保持不动（有测试锁定其正当性，
+        # 全新 clone 尚未填充时确实是空；doc/11 §2.2），用户可见层在这里大声报错：
+        # 安装态资源目录缺失 = wheel 打包/安装不完整，静默打印"目录为空"且退出码 0
+        # 会把损坏伪装成正常（PG-0 实测：`flows -n xianxia` 返回 0、0 个流派）。
+        d = flows_dir(name)
+        if not d.exists():
+            print(f"══ {name} ══  {NAMESPACES.get(name, '')}")
+            print(
+                f"  ★ 资源缺失：{d} 不存在 —— 安装不完整或 wheel 缺资源",
+                file=sys.stderr,
+            )
+            missing = True
+            continue
         cards = load_namespace(name)
         print(f"══ {name} ══  {NAMESPACES.get(name, '')}")
         if not cards:
-            print("  （目录为空或不存在）")
+            print("  （目录存在但为空 —— 全新 clone 尚未运行移植脚本时属正常状态）")
             continue
         print(f"  共 {len(cards)} 个\n")
         for fid, c in cards.items():
@@ -97,6 +112,10 @@ def cmd_flows(args: argparse.Namespace) -> int:
             print(found.writer_block(include_example=args.with_example))
             print()
 
+    if missing:
+        print()
+        print("★ 流派资源缺失：请检查安装完整性（见上方 ★ 行）。", file=sys.stderr)
+        return 2
     if not args.detail:
         print()
         print("查看某流派完整卡：storyforge flows --detail <id> [--with-example]")

@@ -128,10 +128,22 @@ def run_doctor(*, verbose: bool = False) -> tuple[bool, list[dict[str, Any]]]:
             results.append(_check("database", False, f"{type(exc).__name__}: {exc}"))
 
     # provider 能力声明
+    # ★ 三项**独立** try（PG-1C，doc/11 §5.1）：旧实现 providers 与
+    # extractor_thinking_minimized 同在一个 try、api_keys 是 `except: pass` ——
+    # providers 一抛错，报告就从 10 项静默缩水成 8 项，读报告的人无从知晓
+    # 少了什么。现在任何一项失败/无法评估都以自己的行呈现（占位项 ok=None）。
     try:
         from storyforge.infra.llm.capability import load_registry
 
         reg = load_registry()
+    except Exception as exc:  # noqa: BLE001
+        placeholder = (
+            f"占位：providers 加载失败（{type(exc).__name__}），本项无法评估"
+        )
+        results.append(_check("providers", False, f"{type(exc).__name__}: {exc}"))
+        results.append(_check("extractor_thinking_minimized", None, placeholder))
+        results.append(_check("api_keys", None, placeholder))
+    else:
         results.append(
             _check("providers", True, f"{len(reg.models)} models / {len(reg.providers)} providers")
         )
@@ -140,61 +152,78 @@ def run_doctor(*, verbose: bool = False) -> tuple[bool, list[dict[str, Any]]]:
         # ⚠️ 实测：小米 MiMo v2.5 **关不掉思考**（enable_thinking/thinking 都被忽略），
         # 因此合格形态有三种：模型本身不思考 / 真能关闭 / 取到最低 effort 档。
         # 这里按「效果」判定，而不是按某个参数名 —— 参数是实现细节。
-        bad: list[str] = []
-        for node in ("scene_extractor", "entity_resolver", "relation_extractor"):
-            try:
-                m, _ = reg.route(node)
-                policy = reg.thinking_policy_for(node, m)
-                if not m.supports_reasoning:
-                    continue
-                if policy.get("enable_thinking") is False:
-                    continue
-                if policy.get("reasoning_effort") in ("minimal", "low"):
-                    continue
-                bad.append(f"{node}->{m.id} policy={policy}")
-            except Exception as exc:  # noqa: BLE001
-                bad.append(f"{node}: {exc}")
-        results.append(
-            _check(
-                "extractor_thinking_minimized",
-                not bad,
-                f"违规: {bad}" if bad
-                else "抽取类节点均已取最低思考档（旧项目 entity_classify 空输出 100%）",
+        try:
+            bad: list[str] = []
+            for node in ("scene_extractor", "entity_resolver", "relation_extractor"):
+                try:
+                    m, _ = reg.route(node)
+                    policy = reg.thinking_policy_for(node, m)
+                    if not m.supports_reasoning:
+                        continue
+                    if policy.get("enable_thinking") is False:
+                        continue
+                    if policy.get("reasoning_effort") in ("minimal", "low"):
+                        continue
+                    bad.append(f"{node}->{m.id} policy={policy}")
+                except Exception as exc:  # noqa: BLE001
+                    bad.append(f"{node}: {exc}")
+            results.append(
+                _check(
+                    "extractor_thinking_minimized",
+                    not bad,
+                    f"违规: {bad}" if bad
+                    else "抽取类节点均已取最低思考档（旧项目 entity_classify 空输出 100%）",
+                )
             )
-        )
-    except Exception as exc:  # noqa: BLE001
-        results.append(_check("providers", False, f"{type(exc).__name__}: {exc}"))
-
-    # API key 是否配置（不打印值）
-    try:
-        from storyforge.infra.llm.capability import load_registry as _lr
-
-        reg = _lr()
-        missing = [
-            p.name for p in reg.providers.values()
-            if p.api_key_env and not p.resolve_api_key()
-        ]
-        results.append(
-            _check(
-                "api_keys",
-                True,  # 缺 key 不算失败：Mock 模式与离线测试不需要
-                f"未配置: {missing}（Mock/离线模式不受影响）" if missing else "已配置",
+        except Exception as exc:  # noqa: BLE001
+            results.append(_check("extractor_thinking_minimized", False,
+                                  f"{type(exc).__name__}: {exc}"))
+        # API key 是否配置（不打印值）
+        try:
+            missing = [
+                p.name for p in reg.providers.values()
+                if p.api_key_env and not p.resolve_api_key()
+            ]
+            results.append(
+                _check(
+                    "api_keys",
+                    True,  # 缺 key 不算失败：Mock 模式与离线测试不需要
+                    f"未配置: {missing}（Mock/离线模式不受影响）" if missing else "已配置",
+                )
             )
-        )
-    except Exception:  # noqa: BLE001
-        pass
+        except Exception as exc:  # noqa: BLE001
+            results.append(_check("api_keys", False, f"{type(exc).__name__}: {exc}"))
 
     # 分层纪律：domain/ 不得依赖框架
+    # ★ B-5（PG-1C）：旧实现 `rglob("*.py")` 扫到 0 个文件也报 OK ——
+    # 安装态没有 src/，架构契约成了恒真。现在分三种形态：
+    #   无 domain 目录（安装态）→ SKIP「无源码树」；
+    #   目录存在但 0 个 .py    → FAIL（检查对象缺失，绝不报 OK）；
+    #   有文件                 → 正常扫描判定。
     src = REPO_ROOT / "src" / "storyforge"
-    domain_bad: list[str] = []
-    for p in (src / "domain").rglob("*.py"):
-        text = p.read_text(encoding="utf-8")
-        if "import langgraph" in text or "import langchain" in text:
-            domain_bad.append(str(p.relative_to(src)))
-    results.append(
-        _check("domain_is_framework_free", not domain_bad,
-               f"违规: {domain_bad}" if domain_bad else "ok")
-    )
+    domain_dir = src / "domain"
+    if not domain_dir.is_dir():
+        results.append(_check(
+            "domain_is_framework_free", None,
+            f"跳过：无源码树（{domain_dir} 不存在）—— 安装态的正常形态",
+        ))
+    else:
+        domain_files = sorted(domain_dir.rglob("*.py"))
+        if not domain_files:
+            results.append(_check(
+                "domain_is_framework_free", False,
+                f"domain 目录存在但扫到 0 个 .py（{domain_dir}）—— 检查对象缺失",
+            ))
+        else:
+            domain_bad: list[str] = []
+            for p in domain_files:
+                text = p.read_text(encoding="utf-8")
+                if "import langgraph" in text or "import langchain" in text:
+                    domain_bad.append(str(p.relative_to(src)))
+            results.append(
+                _check("domain_is_framework_free", not domain_bad,
+                       f"违规: {domain_bad}" if domain_bad else "ok")
+            )
 
     # ★ 跳过（None）不算失败，但绝不能被当成通过 —— CLI 端以 [SKIP] 显式呈现
     ok = all(r["ok"] is not False for r in results)

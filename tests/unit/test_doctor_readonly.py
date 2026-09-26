@@ -118,3 +118,68 @@ def test_doctor_missing_db_dir_is_reported_not_created(fresh_install_data: Path)
     assert str(fresh_install_data) in by["config"]["detail"], (
         "config 项应指出 data_dir 的目标路径"
     )
+
+
+# ---------------------------------------------------------------------------
+# PG-1C：报告完整性 —— 任何检查项都不得静默消失或假装通过
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_reports_all_ten_items_when_providers_broken(monkeypatch) -> None:
+    """★ 变异二（doc/11 §5.3）：providers 加载失败 → 报告仍含 **10 项**。
+
+    PG-0 实测：providers 抛错后 extractor/api_keys 两项静默消失（10→8），
+    读报告的人无从知晓少了什么。现在失败项自身 FAIL、
+    依赖它的两项以占位 SKIP 呈现 —— 一项都不许蒸发。
+    """
+    import storyforge.infra.llm.capability as capability
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("providers exploded")
+
+    monkeypatch.setattr(capability, "load_registry", _boom)
+    ok, results = run_doctor()
+    names = [r["check"] for r in results]
+    assert len(results) == 10, f"报告应含 10 项，实际 {len(results)}：{names}"
+    assert len(set(names)) == 10, "报告出现重复项"
+    by = _by_name(results)
+    assert by["providers"]["ok"] is False
+    for name in ("extractor_thinking_minimized", "api_keys"):
+        assert by[name]["ok"] is None, f"{name} 应为占位 SKIP，实际 {by[name]['ok']}"
+        assert "占位" in by[name]["detail"]
+    assert ok is False, "providers 本身失败 → 整体必须 FAIL（占位不改变判定）"
+
+
+def test_domain_scan_skips_when_no_source_tree(monkeypatch, tmp_path) -> None:
+    """★ 变异三（doc/11 §5.3）：无源码树 → domain_is_framework_free **不报 OK**。
+
+    PG-0 实测（B-5）：安装态扫到 0 个文件也报 OK —— 架构契约成了恒真。
+    无源码树是安装态的正常形态 → 显式 SKIP。
+    """
+    import storyforge.doctor as doctor_mod
+
+    monkeypatch.setattr(doctor_mod, "REPO_ROOT", tmp_path)  # tmp 下无 src/
+    ok, results = run_doctor()
+    by = _by_name(results)
+    assert by["domain_is_framework_free"]["ok"] is None, (
+        f"无源码树应 SKIP，实际 {by['domain_is_framework_free']}"
+    )
+    assert "无源码树" in by["domain_is_framework_free"]["detail"]
+    assert ok is True  # SKIP 不算失败
+
+
+def test_domain_scan_empty_dir_fails_not_ok(monkeypatch, tmp_path) -> None:
+    """domain 目录存在但扫到 0 个 .py → FAIL，绝不报 OK（B-5 的核心形态）。
+
+    反向钉死：若有人把"0 文件"分支删掉退回 `rglob` 直接迭代，
+    空目录会再次静默报 OK —— 本测试当场变红。
+    """
+    import storyforge.doctor as doctor_mod
+
+    (tmp_path / "src" / "storyforge" / "domain").mkdir(parents=True)
+    monkeypatch.setattr(doctor_mod, "REPO_ROOT", tmp_path)
+    ok, results = run_doctor()
+    by = _by_name(results)
+    assert by["domain_is_framework_free"]["ok"] is False
+    assert "0 个" in by["domain_is_framework_free"]["detail"]
+    assert ok is False
