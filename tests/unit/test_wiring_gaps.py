@@ -202,6 +202,8 @@ async def test_invoke_resumable_uses_full_input_on_fresh_thread() -> None:
     calls: list[str] = []
 
     class _FakeGraph:
+        checkpointer = object()      # 非空 → 走探测分支
+
         @staticmethod
         async def aget_state(cfg):
             class S:
@@ -230,6 +232,8 @@ def test_invoke_resumable_passes_none_when_work_pending() -> None:
     calls: list[str] = []
 
     class _GraphWithPending:
+        checkpointer = object()      # 非空 → 会走探测分支
+
         async def aget_state(self, cfg):
             class S:
                 next = ("write",)
@@ -243,3 +247,32 @@ def test_invoke_resumable_passes_none_when_work_pending() -> None:
                                        {"configurable": {"thread_id": "t"}}))
     assert out == {"ok": True}
     assert calls == ["resume"], "有未完成断点却重跑了 —— 恢复语义被破坏"
+
+
+def test_invoke_resumable_without_checkpointer_does_not_crash() -> None:
+    """★★ 图没有 checkpointer 时**不得探测** —— 否则整条链路崩掉。
+
+    实测：无 checkpointer 的图调 `aget_state()` 抛
+    `ValueError: No checkpointer set`。checkpoint 不可用是**允许的降级**
+    （`_checkpointer()` 会 yield None），那时必须退回旧行为而不是崩。
+
+    ★ 这条是修复过程中**我自己引入又发现**的回归：
+    第一版 `_invoke_resumable` 无条件调 `aget_state()`，
+    在"DB 不可用 → checkpointer=None"这条降级路径上必崩。
+    """
+    from storyforge.cli import _invoke_resumable
+
+    class _GraphWithoutCheckpointer:
+        checkpointer = None
+
+        async def aget_state(self, cfg):     # pragma: no cover - 不应被调用
+            raise AssertionError("无 checkpointer 时不得调用 aget_state")
+
+        async def ainvoke(self, payload, cfg):
+            assert payload is not None, "无 checkpointer 时必须传完整输入"
+            return {"ok": True}
+
+    out = asyncio.run(_invoke_resumable(
+        _GraphWithoutCheckpointer(), {"book_id": 1},
+        {"configurable": {"thread_id": "t"}}))
+    assert out == {"ok": True}

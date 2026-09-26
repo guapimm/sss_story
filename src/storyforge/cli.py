@@ -482,7 +482,14 @@ async def _invoke_resumable(graph: Any, payload: dict[str, Any],
     但节点逻辑、盘上读写、调度开销全部白做一遍）。
 
     判据用 `aget_state(cfg).next` 非空 = 有未完成工作。
+
+    ⚠️ **图没有 checkpointer 时必须跳过探测**：`aget_state()` 在无 checkpointer
+    时会抛 `ValueError: No checkpointer set`（实测），直接崩掉整条链路。
+    故先用 `graph.checkpointer` 判空，退回"传完整输入"的旧行为。
     """
+    if getattr(graph, "checkpointer", None) is None:
+        # 无恢复能力（checkpoint 不可用 / 纯文件模式）→ 旧行为，不探测
+        return await graph.ainvoke(payload, cfg)
     state = await graph.aget_state(cfg)
     if state is not None and getattr(state, "next", ()):
         print(f"     ↻ 检测到未完成断点（{state.next}），续跑而非重跑")
