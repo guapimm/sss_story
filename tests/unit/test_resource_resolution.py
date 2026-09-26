@@ -1,16 +1,18 @@
-"""PG-1A 资源定位规则的单元测试 —— 防止"装完读不到"回归。
+"""PG-1A/1B 路径解析规则的单元测试 —— 防止"装完读不到 / 装完写错地方"回归。
 
-## 防的是什么（doc/10 实测、doc/11 §3.3 的解析顺序）
+## 防的是什么（doc/10 实测、doc/11 §3.3/§4.2 的解析顺序）
 
 PG-0 实测：非 editable 安装后 `providers` / `prompts` / `config` 三条链路同时断，
 根因是 import 期冻结的 `REPO_ROOT` 系常量在安装态指向 `<venv>\\Lib`。
-本文件钉住 `resolve_config_dir()` 的**完整优先级**与 `Settings` / `load_registry`
-对它的接线——每一层都必须**双向可区分**（不只是"能解析"，还要"错序必失败"）。
+本文件钉住 `resolve_config_dir()` 与 `resolve_data_dir()` 的**完整优先级**及
+`Settings` / `load_registry` 对它们的接线——每一层都必须**双向可区分**
+（不只是"能解析"，还要"错序必失败"）。
 
-解析顺序（doc/11 §3.3，高 → 低）：
-  1. `STORYFORGE_CONFIG_DIR` 环境变量
-  2. 包内 `storyforge/_resources/config`（安装态，force-include 打入 wheel）
-  3. `<REPO_ROOT>/config`（源码树）
+解析顺序（高 → 低）：
+  config: 1. `STORYFORGE_CONFIG_DIR`  2. 包内 `_resources/config`（安装态）
+          3. `<REPO_ROOT>/config`（源码树）
+  data:   1. `STORYFORGE_DATA_DIR`    2. 源码树 `<REPO_ROOT>/data`
+          3. 安装态用户目录（仅安装态切换，§4.2 硬约束）
 """
 
 from __future__ import annotations
@@ -170,5 +172,98 @@ def test_load_registry_missing_providers_fails_closed(tmp_path: Path, monkeypatc
         with pytest.raises(ProviderConfigError) as ei:
             load_registry()
         assert str(cfg) in str(ei.value), "报错应指向实际找过的路径，便于诊断"
+    finally:
+        reset_settings()
+
+
+# ---------------------------------------------------------------------------
+# PG-1B：resolve_data_dir（doc/11 §4.2 —— 仅安装态切用户目录）
+# ---------------------------------------------------------------------------
+
+
+def _make_source_repo(root: Path) -> Path:
+    """造一个"源码树"候选根（有 pyproject.toml）。"""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text("", encoding="utf-8")
+    return root
+
+
+def test_data_dir_env_wins(tmp_path: Path) -> None:
+    """STORYFORGE_DATA_DIR 是最高优先级 —— 源码树/用户目录两个候选都让位。"""
+    repo = _make_source_repo(tmp_path / "repo")
+    user = tmp_path / "user"
+    env_dir = tmp_path / "envdir"
+    got = resolve_data_dir(env_value=str(env_dir), repo_root=repo, user_dir=user)
+    assert got == env_dir
+
+
+def test_data_dir_blank_env_ignored(tmp_path: Path) -> None:
+    """空串/纯空白的环境变量视为未设置 —— 不得解析成空路径。"""
+    repo = _make_source_repo(tmp_path / "repo")
+    assert resolve_data_dir(env_value="  ", repo_root=repo) == repo / "data"
+
+
+def test_data_dir_source_tree_stays_repo_data(tmp_path: Path) -> None:
+    """★ 源码树（候选根有 pyproject.toml）→ `<repo>/data` —— 开发机数据不动。"""
+    repo = _make_source_repo(tmp_path / "repo")
+    assert resolve_data_dir(repo_root=repo, user_dir=tmp_path / "user") == repo / "data"
+
+
+def test_data_dir_installed_uses_user_dir(tmp_path: Path) -> None:
+    """★ 安装态（候选根无 pyproject.toml）→ 用户目录（注入的 user_dir）。
+
+    反向钉死：若有人把"仅安装态切换"改成无条件切默认值，
+    开发机 data/ 会被移走（doc/11 §4.2 硬约束）——本测试与上一条
+    一起把两种形态分开钉住。
+    """
+    bare = tmp_path / "installed_venv_lib"  # 无 pyproject.toml
+    bare.mkdir()
+    user = tmp_path / "user"
+    assert resolve_data_dir(repo_root=bare, user_dir=user) == user
+
+
+def test_user_data_dir_stdlib_platforms(tmp_path: Path, monkeypatch) -> None:
+    """用户目录的平台分支（仅 stdlib；doc/11 §10 决策 6：不用 platformdirs）。"""
+    import os
+    import sys
+
+    import storyforge.config as cfg
+
+    home = Path.home()
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+    assert cfg._user_data_dir() == tmp_path / "roaming" / "storyforge"
+
+    monkeypatch.delenv("APPDATA", raising=False)
+    assert cfg._user_data_dir() == home / "AppData" / "Roaming" / "storyforge", (
+        "APPDATA 缺失时必须有确定性回落，不能返回 None 或崩"
+    )
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert cfg._user_data_dir() == home / "Library" / "Application Support" / "storyforge"
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    assert cfg._user_data_dir() == tmp_path / "xdg" / "storyforge"
+
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert cfg._user_data_dir() == home / ".local" / "share" / "storyforge"
+    assert os.environ.get("XDG_DATA_HOME") in (None, "")  # delenv 已生效的旁证
+
+
+def test_settings_data_dir_follows_env(tmp_path: Path, monkeypatch) -> None:
+    """★ `Settings.data_dir` 按需解析，不得 import 期冻结；源码树默认仍是 REPO_ROOT/data。"""
+    env_dir = tmp_path / "envdata"
+    monkeypatch.setenv("STORYFORGE_DATA_DIR", str(env_dir))
+    reset_settings()
+    try:
+        assert Settings().data_dir == env_dir
+    finally:
+        reset_settings()
+    # 反向：环境变量拿掉后回落源码树语义（若有人改成无条件用户目录，这里会失败）
+    monkeypatch.delenv("STORYFORGE_DATA_DIR", raising=False)
+    reset_settings()
+    try:
+        assert Settings().data_dir == REPO_ROOT / "data"
     finally:
         reset_settings()

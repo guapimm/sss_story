@@ -29,7 +29,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     ok, results = run_doctor(verbose=args.verbose)
     width = max(len(r["check"]) for r in results) if results else 10
     for r in results:
-        mark = "OK  " if r["ok"] else "FAIL"
+        # ★ ok 三态：True/False/None(跳过)。SKIP 必须显式可见，不得混入 OK
+        # （"跳过被当成通过"是本项目明令禁止的静默降级同型病）
+        mark = "SKIP" if r["ok"] is None else ("OK  " if r["ok"] else "FAIL")
         print(f"  [{mark}] {r['check']:<{width}}  {r['detail']}")
     print()
     print(f"doctor: {'PASS' if ok else 'FAIL'}  (storyforge {__version__})")

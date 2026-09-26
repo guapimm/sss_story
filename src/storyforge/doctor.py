@@ -1,4 +1,4 @@
-"""`doctor` 自检 —— 让"系统是否健康"变成一条命令。
+r"""`doctor` 自检 —— 让"系统是否健康"变成一条命令。
 
 ## 从 `cli.py` 拆出来的理由
 
@@ -27,27 +27,61 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
-from storyforge.config import REPO_ROOT, Settings, configure, get_settings, reset_settings
+from storyforge.config import REPO_ROOT, Settings, configure, reset_settings
 
 
-def _check(name: str, ok: bool, detail: str = "") -> dict[str, Any]:
+def _check(name: str, ok: bool | None, detail: str = "") -> dict[str, Any]:
+    """一条自检结果。
+
+    `ok` 三态：`True` 通过 / `False` 失败 / `None` **跳过**
+    （如"数据库未初始化"——必须显式呈现为 SKIP，不得伪装成通过，
+    也不得因跳过而判整体失败；doc/11 §4.3、§5.2）。
+    """
     return {"check": name, "ok": ok, "detail": detail}
 
 
+def _probe_writable(data_dir: Path) -> tuple[bool, Path]:
+    """只读探测 `data_dir` 将来能否被创建：找最近一个**已存在**的祖先查可写性。
+
+    不实际创建任何目录（PG-1B：doctor 不得有写副作用）。
+    """
+    probe = data_dir
+    while not probe.parent.exists():
+        probe = probe.parent
+    return os.access(probe.parent, os.W_OK), probe.parent
+
+
 def run_doctor(*, verbose: bool = False) -> tuple[bool, list[dict[str, Any]]]:
-    """自检：配置 / 存储 / 外键 / 能力声明 / 分层纪律。
+    r"""自检：配置 / 存储 / 外键 / 能力声明 / 分层纪律。
 
     返回 `(全部通过?, 逐项结果)` —— 结果列表供 CLI 打印与测试断言。
+    "全部通过"= 没有任何一项为 `False`；`None`（跳过）单独呈现，不算失败。
+
+    ★ **本函数是只读体检**（PG-1B，doc/11 §4.3）：不创建目录、不创建/迁移数据库。
+    旧实现在安装目录里建出 `data/`、`artifacts/` 与 176 KB 的 `storyforge.db`
+    （PG-0 实测 B-7）——真实安装到 `C:\Program Files` 时会 PermissionError，
+    或被 UAC 虚拟化静默写进 VirtualStore。写盘只属于显式命令（`init-db` 等）。
     """
     results: list[dict[str, Any]] = []
     reset_settings()
     s: Settings = configure()
-    s.ensure_dirs()
 
-    results.append(_check("config", True, f"data_dir={s.data_dir}"))
+    # config：只读探测，不代建目录（旧实现这里调 s.ensure_dirs() —— B-7 根因）
+    if s.data_dir.exists():
+        results.append(_check("config", True, f"data_dir={s.data_dir}"))
+    else:
+        writable, ancestor = _probe_writable(s.data_dir)
+        detail = (
+            f"data_dir={s.data_dir} 不存在；首次写盘时将创建"
+            f"（父目录 {ancestor} 可写，本命令未创建）"
+            if writable
+            else f"data_dir={s.data_dir} 不存在，且父目录 {ancestor} 不可写"
+        )
+        results.append(_check("config", writable, detail))
 
     # 结构闸门必须真的阻断（旧项目 shadow=true → 不阻断 → 400 章挤第 1 卷）
     results.append(
@@ -58,33 +92,40 @@ def run_doctor(*, verbose: bool = False) -> tuple[bool, list[dict[str, Any]]]:
         )
     )
 
-    # 数据库
-    try:
-        from storyforge.infra.storage.db import Database
+    # 数据库（★ 只读）：库不存在 → 明确报"未初始化"并跳过，绝不代建；
+    # 库存在 → 也**不再 create_all()**（schema 归 init-db 管，doctor 只读检查）
+    if not s.db_path.exists():
+        skip = f"未初始化（运行 init-db）——doctor 不代建（db_path={s.db_path}）"
+        results.append(_check("database", None, skip))
+        results.append(_check("foreign_keys_forced", None, skip))
+        results.append(_check("integrity", None, skip))
+        results.append(_check("all_tables_have_fk", None, skip))
+    else:
+        try:
+            from storyforge.infra.storage.db import Database
 
-        db = Database.from_settings(s)
-        db.create_all()
-        tables = db.list_tables()
-        results.append(_check("database", bool(tables), f"{len(tables)} tables"))
-        results.append(
-            _check("foreign_keys_forced", db.foreign_keys_enabled(),
-                   "SQLite 默认关闭，必须显式开启")
-        )
-        results.append(_check("integrity", db.check_integrity() == "ok",
-                              db.check_integrity()))
+            db = Database.from_settings(s)
+            tables = db.list_tables()
+            results.append(_check("database", bool(tables), f"{len(tables)} tables"))
+            results.append(
+                _check("foreign_keys_forced", db.foreign_keys_enabled(),
+                       "SQLite 默认关闭，必须显式开启")
+            )
+            results.append(_check("integrity", db.check_integrity() == "ok",
+                                  db.check_integrity()))
 
-        missing_fk = [
-            t for t in tables
-            if t not in ("sqlite_sequence",) and not db.foreign_key_targets(t)
-            and t not in ("books",)
-        ]
-        # books 是 FK 根，自己没有外键是正常的
-        results.append(
-            _check("all_tables_have_fk", not missing_fk,
-                   f"无外键: {missing_fk}" if missing_fk else "ok")
-        )
-    except Exception as exc:  # noqa: BLE001
-        results.append(_check("database", False, f"{type(exc).__name__}: {exc}"))
+            missing_fk = [
+                t for t in tables
+                if t not in ("sqlite_sequence",) and not db.foreign_key_targets(t)
+                and t not in ("books",)
+            ]
+            # books 是 FK 根，自己没有外键是正常的
+            results.append(
+                _check("all_tables_have_fk", not missing_fk,
+                       f"无外键: {missing_fk}" if missing_fk else "ok")
+            )
+        except Exception as exc:  # noqa: BLE001
+            results.append(_check("database", False, f"{type(exc).__name__}: {exc}"))
 
     # provider 能力声明
     try:
@@ -155,7 +196,8 @@ def run_doctor(*, verbose: bool = False) -> tuple[bool, list[dict[str, Any]]]:
                f"违规: {domain_bad}" if domain_bad else "ok")
     )
 
-    ok = all(r["ok"] for r in results)
+    # ★ 跳过（None）不算失败，但绝不能被当成通过 —— CLI 端以 [SKIP] 显式呈现
+    ok = all(r["ok"] is not False for r in results)
     return ok, results
 
 

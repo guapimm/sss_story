@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -88,14 +89,59 @@ def resolve_config_dir(
     return repo_dir if repo_dir is not None else REPO_ROOT / "config"
 
 
-def resolve_data_dir() -> Path:
-    """data 目录解析（函数形式，去 import 期冻结）。
+def resolve_data_dir(
+    env_value: str | None = None,
+    repo_root: Path | None = None,
+    user_dir: Path | None = None,
+) -> Path:
+    r"""data 目录解析（每次调用现算，**不做 import 期冻结**）。
 
-    当前仍解析为 `<REPO_ROOT>/data`（源码树语义，开发机 `data/` 不动）。
-    ★ PG-1B 将在此加入"仅安装态切 `%APPDATA%`"分支（doc/11 §4.2 硬约束：
-    无条件切换会移动开发机数据并破坏既有测试的默认路径假设）——本阶段**不动**。
+    ## 解析顺序（高 → 低）
+
+      1. `STORYFORGE_DATA_DIR` 环境变量（空串/纯空白视为未设置）
+      2. 源码树 → `<REPO_ROOT>/data` —— 开发工作流零变化
+      3. 安装态 → 用户可写目录（**仅安装态**切换）：
+           Windows : `%APPDATA%\storyforge`
+           macOS   : `~/Library/Application Support/storyforge`
+           Linux   : `$XDG_DATA_HOME/storyforge` 或 `~/.local/share/storyforge`
+
+    ## ★ 硬约束：为什么"仅安装态"才切（doc/11 §4.2）
+
+    若无条件把默认值改为用户目录，会**移动开发机的 `data/`**
+    （现含 `artifacts/books/*`、`research_cache.json`、`s0_probe/` 取证产物），
+    并破坏所有既有测试的默认路径假设。源码树/安装态的判据是
+    候选根是否存在 `pyproject.toml`（源码树有、安装态 `<venv>\Lib` 无；
+    doc/11 §1 V4 已实测）。
+
+    ## 可注入参数（仅测试使用）
+
+    生产调用一律无参；测试注入 `repo_root` / `user_dir` 模拟两种形态，
+    不必真的装一个 venv。
     """
-    return REPO_ROOT / "data"
+    env = env_value if env_value is not None else os.environ.get("STORYFORGE_DATA_DIR")
+    if env and env.strip():
+        return Path(env)
+    root = repo_root if repo_root is not None else REPO_ROOT
+    if (root / "pyproject.toml").exists():
+        return root / "data"
+    return user_dir if user_dir is not None else _user_data_dir()
+
+
+def _user_data_dir() -> Path:
+    """安装态的用户数据目录（仅 stdlib；doc/11 §10 决策 6：不引入 platformdirs）。
+
+    `APPDATA`/`XDG_DATA_HOME` 未设置时的回落是**确定性的**
+    （Windows 用家目录下的 Roaming 等价路径），不是静默猜。
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA")
+        root = Path(base) if base and base.strip() else Path.home() / "AppData" / "Roaming"
+        return root / "storyforge"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "storyforge"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg and xdg.strip() else Path.home() / ".local" / "share"
+    return base / "storyforge"
 
 
 # --------------------------------------------------------------------------- #
