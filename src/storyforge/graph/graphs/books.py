@@ -129,6 +129,7 @@ class GraphDeps:
         client: LLMClient,
         store: ArtifactStore,
         injuries: InjuryRepository | None = None,
+        checkpointer: Any = None,
     ) -> None:
         self.client = client
         self.store = store
@@ -136,6 +137,13 @@ class GraphDeps:
         #:  可选而非必填的原因：纯文件模式（无 DB）的测试与产物回放
         #:  不应被迫建库。但**生产链路必须传** —— 否则恢复链路又断在这里。
         self.injuries = injuries
+        #: ★ checkpoint 存储（可选）。为 None 时图**无恢复能力**（旧行为）。
+        #:
+        #: 此前 `open_checkpointer()` 全仓**只被测试调用**，五个 `compile()`
+        #: 都不传 checkpointer —— 于是"崩溃恢复后已完成单元不重跑"（不变量 4）
+        #: 在生产里**从未成立**，`data/checkpoints.db` 也从未产生过。
+        #: 由 CLI 注入后该能力才真正可用。
+        self.checkpointer = checkpointer
 
 
 #: 内置图名 ↔ `PipelineStage` 的**唯一映射**。
@@ -271,7 +279,7 @@ def build_bible_graph(deps: GraphDeps) -> CompiledStateGraph:
     g.add_node("generate", generate)
     g.add_edge(START, "generate")
     g.add_edge("generate", END)
-    return g.compile(name="bible")
+    return g.compile(name="bible", checkpointer=deps.checkpointer)
 
 
 # --------------------------------------------------------------------------- #
@@ -321,7 +329,7 @@ def build_volume_plan_graph(deps: GraphDeps) -> CompiledStateGraph:
     g.add_node("plan", plan)
     g.add_edge(START, "plan")
     g.add_edge("plan", END)
-    return g.compile(name="volume_plan")
+    return g.compile(name="volume_plan", checkpointer=deps.checkpointer)
 
 
 # --------------------------------------------------------------------------- #
@@ -391,7 +399,7 @@ def build_skeleton_graph(deps: GraphDeps) -> CompiledStateGraph:
     g.add_node("plan", plan)
     g.add_edge(START, "plan")
     g.add_edge("plan", END)
-    return g.compile(name="skeleton")
+    return g.compile(name="skeleton", checkpointer=deps.checkpointer)
 
 
 # --------------------------------------------------------------------------- #
@@ -508,7 +516,7 @@ def build_detail_batch_graph(deps: GraphDeps) -> CompiledStateGraph:
     g.add_node("plan", plan)
     g.add_edge(START, "plan")
     g.add_edge("plan", END)
-    return g.compile(name="detail_batch")
+    return g.compile(name="detail_batch", checkpointer=deps.checkpointer)
 
 
 # --------------------------------------------------------------------------- #

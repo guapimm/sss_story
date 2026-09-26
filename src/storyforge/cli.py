@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -442,7 +443,54 @@ def _book_topic_from_store(store: Any, book_id: int) -> str:
     return ""
 
 
-def _graph_deps(*, client: Any = None) -> Any:
+@contextlib.asynccontextmanager
+async def _checkpointer():
+    """打开 checkpoint 存储并交给调用方（不可用时 yield None）。
+
+    ★ 为什么必须有（S0 后核实的断点）：
+    `open_checkpointer()` 此前**全仓只被测试调用**，五个 `compile()` 都不传
+    checkpointer —— 于是"崩溃恢复后已完成单元不重跑"（不变量 4）**在生产中
+    从未成立**，`data/checkpoints.db` 也从未产生过。
+
+    checkpoint 不可用**不阻断**（图仍能跑，只是没有恢复能力），
+    但会打印一行说明 —— 不静默降级。
+    """
+    try:
+        from storyforge.graph.graphs.books import open_checkpointer
+
+        async with open_checkpointer() as saver:
+            yield saver
+    except Exception as exc:  # noqa: BLE001
+        print(f"（提示：checkpoint 不可用（{type(exc).__name__}: {exc}），"
+              f"本次无断点恢复能力）", file=sys.stderr)
+        yield None
+
+
+async def _invoke_resumable(graph: Any, payload: dict[str, Any],
+                            cfg: dict[str, Any]) -> Any:
+    """**有未完成 checkpoint 就续跑，否则从 START 开始**。
+
+    ★ 为什么不能永远传完整 dict（S0 后核实的断点）：
+    LangGraph 的 `ainvoke(完整输入, cfg)` 会**从 START 重跑**，
+    即使该 thread 已有 checkpoint —— 实测：
+
+        ainvoke(None,  cfg)  -> seen=['a','b']          真 resume
+        ainvoke(输入, cfg)   -> seen=['a','b','a','b']  重跑了！
+
+    而 CLI 此前**永远传完整 dict**，于是 checkpointer 的意义被完全抵消
+    （重放会让已完成的 LLM 调用按幂等缓存命中而*不*重复扣费，
+    但节点逻辑、盘上读写、调度开销全部白做一遍）。
+
+    判据用 `aget_state(cfg).next` 非空 = 有未完成工作。
+    """
+    state = await graph.aget_state(cfg)
+    if state is not None and getattr(state, "next", ()):
+        print(f"     ↻ 检测到未完成断点（{state.next}），续跑而非重跑")
+        return await graph.ainvoke(None, cfg)
+    return await graph.ainvoke(payload, cfg)
+
+
+def _graph_deps(*, client: Any = None, checkpointer: Any = None) -> Any:
     """构造 `GraphDeps` 并**接上仓储**（0-7 的生产接线点）。
 
     ★ 为什么必须在这里接线：伤势恢复链路的第 ③ 环是"调度器读得到真实伤势"，
@@ -465,7 +513,8 @@ def _graph_deps(*, client: Any = None) -> Any:
     except Exception as exc:  # noqa: BLE001
         print(f"（提示：伤势仓储未接线（{type(exc).__name__}: {exc}），"
               f"本批次不注入恢复节拍）", file=sys.stderr)
-    return GraphDeps(client=client, store=store, injuries=injuries)
+    return GraphDeps(client=client, store=store, injuries=injuries,
+                     checkpointer=checkpointer)
 
 
 def _guard_api_key() -> int | None:
@@ -497,7 +546,8 @@ def _guard_api_key() -> int | None:
     return None
 
 
-async def _run_plan(args: argparse.Namespace, client: Any = None) -> int:
+async def _run_plan(args: argparse.Namespace, client: Any = None,
+                  checkpointer: Any = None) -> int:
     from storyforge.graph.graphs.books import thread_config
     from storyforge.graph.graphs.books import (
         build_bible_graph,
@@ -514,14 +564,15 @@ async def _run_plan(args: argparse.Namespace, client: Any = None) -> int:
     _register_book(book_id=args.book_id, topic=args.topic, genre=args.genre,
                    target_chapters=args.book_chapters)
     # ★ 0-7：经 `_graph_deps()` 接线仓储（伤势恢复链路的 ③ 环）
-    deps = _graph_deps(client=client)
+    deps = _graph_deps(client=client, checkpointer=checkpointer)
     s = get_settings()
 
     book_id = args.book_id
 
     # ── ① 圣经 ──
     print(f"[1/4] 生成世界观圣经（book {book_id}）…")
-    out = await build_bible_graph(deps).ainvoke(
+    out = await _invoke_resumable(
+        build_bible_graph(deps),
         {"book_id": book_id, "topic": args.topic, "genre": args.genre, "refs": {}},
         thread_config(f"b{book_id}:bible"),
     )
@@ -541,7 +592,8 @@ async def _run_plan(args: argparse.Namespace, client: Any = None) -> int:
     # 因此按 `--book-chapters`（默认 400，旧项目实测量级）规划全部卷，
     # 只把正文先写前 `--chapters` 章。
     print(f"[2/4] 规划全部卷的升级台阶（全书 {args.book_chapters} 章）…")
-    out = await build_volume_plan_graph(deps).ainvoke(
+    out = await _invoke_resumable(
+        build_volume_plan_graph(deps),
         {
             "book_id": book_id, "topic": args.topic, "genre": args.genre,
             "target_chapters": args.book_chapters,
@@ -564,7 +616,8 @@ async def _run_plan(args: argparse.Namespace, client: Any = None) -> int:
 
     # ── ③ 骨架（本卷） ──
     print(f"[3/4] 生成本卷骨架（第 {args.volume} 卷）…")
-    out = await build_skeleton_graph(deps).ainvoke(
+    out = await _invoke_resumable(
+        build_skeleton_graph(deps),
         {"book_id": book_id, "current_volume": args.volume, "batch_no": 1,
          "refs": {"bible_ref": bible_ref}},
         thread_config(f"b{book_id}:skeleton:v{args.volume}"),
@@ -578,7 +631,8 @@ async def _run_plan(args: argparse.Namespace, client: Any = None) -> int:
     batch = s.pipeline.detail_batch_size
     end = min(args.chapters, batch)
     print(f"[4/4] 生成本卷细纲（第 1~{end} 章，含伤势节拍注入）…")
-    out = await build_detail_batch_graph(deps).ainvoke(
+    out = await _invoke_resumable(
+        build_detail_batch_graph(deps),
         {"book_id": book_id, "current_volume": args.volume,
          "batch_start": 1, "batch_end": end,
          "refs": {"bible_ref": bible_ref}},
@@ -608,6 +662,35 @@ async def _run_plan(args: argparse.Namespace, client: Any = None) -> int:
     return 0
 
 
+def _persist_calls(client: Any) -> None:
+    """把本次运行的 LLM 调用写进 `llm_calls` 表（受 `persist_calls` 开关控制）。
+
+    ★ 为什么必须在 CLI 边界做：`record_to_row()` 此前**零生产调用点**，
+    导致该表永远 0 行、费用摘要跨运行就查不到账 —— 而成本是 S0 验收维度之一。
+    记录只活在 `client.records` 里，进程一退就没了，故收口点只能是这里。
+
+    落库失败**不抛**（生成已完成且已付费，不该因观测失败而报错），
+    但会打印出来 —— 不静默降级。
+    """
+    records = getattr(client, "records", None) or []
+    if not records:
+        return
+    if not get_settings().observability.persist_calls:
+        print(f"（提示：`persist_calls=false`，本次 {len(records)} 条调用未入库）",
+              file=sys.stderr)
+        return
+    try:
+        from storyforge.infra.storage.db import Database
+        from storyforge.observability.report import persist_calls
+
+        db = Database.open(get_settings().db_path)
+        written = persist_calls(records, db)
+        print(f"（调用记录已入库：{written}/{len(records)} 条 → llm_calls）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"（提示：调用记录未入库（{type(exc).__name__}: {exc}），"
+              f"本次费用无法事后查询）", file=sys.stderr)
+
+
 def _budget_exit(rc: int, client: Any) -> int:
     """预算停机必须产生**非零退出**。
 
@@ -630,11 +713,18 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if rc is not None:
         return rc
     client = _make_client(args)
+
+    async def _go() -> int:
+        # checkpointer 必须在整段执行期间保持打开（图持它的引用）
+        async with _checkpointer() as saver:
+            return await _run_plan(args, client, checkpointer=saver)
+
     try:
-        rc = asyncio.run(_run_plan(args, client))
+        rc = asyncio.run(_go())
     finally:
         # 无论成败都要报账 —— 失败的那次一样烧了钱
         _print_cost_summary(client)
+        _persist_calls(client)
     return _budget_exit(rc, client)
 
 
@@ -643,7 +733,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 
 
-async def _run_write(args: argparse.Namespace, client: Any = None) -> int:
+async def _run_write(args: argparse.Namespace, client: Any = None,
+                     checkpointer: Any = None) -> int:
     from storyforge.graph.graphs.chapter import ChapterDeps, build_chapter_graph
     from storyforge.graph.graphs.books import thread_config
 
@@ -679,7 +770,8 @@ async def _run_write(args: argparse.Namespace, client: Any = None) -> int:
                    genre="")
 
     deps = ChapterDeps(client=client, store=store,
-                       entities=entities, relations=relations)
+                       entities=entities, relations=relations,
+                       checkpointer=checkpointer)
     graph = build_chapter_graph(deps)
 
     bible_ref = f"books/{args.book_id}/bible.md"
@@ -698,7 +790,8 @@ async def _run_write(args: argparse.Namespace, client: Any = None) -> int:
             break
 
         print(f"第{no}章 …", end=" ", flush=True)
-        out = await graph.ainvoke(
+        out = await _invoke_resumable(
+            graph,
             {
                 "book_id": args.book_id, "global_no": no, "volume_no": args.volume,
                 "detail_ready_through": no,
@@ -738,11 +831,18 @@ def cmd_write(args: argparse.Namespace) -> int:
     if rc is not None:
         return rc
     client = _make_client(args)
+
+    async def _go() -> int:
+        # checkpointer 必须在整段执行期间保持打开（图持它的引用）
+        async with _checkpointer() as saver:
+            return await _run_write(args, client, checkpointer=saver)
+
     try:
-        rc = asyncio.run(_run_write(args, client))
+        rc = asyncio.run(_go())
     finally:
         # 无论成败都要报账 —— 失败的那次一样烧了钱
         _print_cost_summary(client)
+        _persist_calls(client)
     return _budget_exit(rc, client)
 
 

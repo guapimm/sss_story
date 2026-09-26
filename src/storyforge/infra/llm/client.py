@@ -203,7 +203,13 @@ class MemoryIdempotencyStore:
 @dataclass
 class ClientConfig:
     max_attempts: int = 3
-    timeout_s: float = 300.0
+    #: 单次调用超时（秒）。
+    #:
+    #: ★ 与 `max_output_tokens_cap` **必须相容**（见那里的推演）：
+    #: 若 `cap / 实测吞吐 > timeout`，`cap` 就是**不可达**的死配置，
+    #: 表现为"模型很慢"，实际是配置自相矛盾。
+    #: 默认值与 `LLMSettings.default_timeout_s` 一致（2,400s）。
+    timeout_s: float = 2400.0
     #: 429 退避基数（秒），指数增长
     backoff_base_s: float = 2.0
     backoff_max_s: float = 60.0
@@ -214,6 +220,10 @@ class ClientConfig:
     #: `finish_reason=length` 且正文为空（旧项目同类失败见模块注释）。
     min_output_tokens: int = 4096
     #: 输出预算上限（token）。防止误配成模型的完整上下文长度而白烧额度。
+    #:
+    #: ★ 与 `timeout_s` 的相容关系（实测吞吐 13.7 tok/s，MiMo v2.6-flash）：
+    #:     cap 32768 tok ÷ 13.7 tok/s ≈ 2,392s  ← 故 `timeout_s` 不得低于此量级
+    #: 两者若不相容，症状是"长章永远超时"，而根因与模型质量无关。
     max_output_tokens_cap: int = 32768
     #: 可选 S0 预算闸门；全部为 None 时保持旧行为。
     max_provider_requests: int | None = None

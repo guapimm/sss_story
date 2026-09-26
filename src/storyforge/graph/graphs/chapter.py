@@ -133,7 +133,7 @@ def build_chapter_graph(deps: ChapterDeps) -> CompiledStateGraph:
     )
     g.add_edge("extract", "commit")
     g.add_edge("commit", END)
-    return g.compile(name="chapter")
+    return g.compile(name="chapter", checkpointer=deps.checkpointer)
 
 
 __all__ = [

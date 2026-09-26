@@ -50,6 +50,7 @@ class ChapterDeps:
         thresholds: Any | None = None,
         entities: Any | None = None,
         relations: Any | None = None,
+        checkpointer: Any = None,
     ) -> None:
         self.client = client
         self.store = store
@@ -62,6 +63,10 @@ class ChapterDeps:
         #: （这正是本轮修的缺口：抽取跑了、产物写了、**库里一行没有**）。
         self.entities = entities
         self.relations = relations
+        #: ★ checkpoint 存储（可选）。为 None 时本章**无恢复能力**（旧行为）。
+        #: 与 `GraphDeps.checkpointer` 同一纪律：生产必须传，否则
+        #: "崩溃恢复后已完成单元不重跑"（不变量 4）不成立。
+        self.checkpointer = checkpointer
 
 
 # --------------------------------------------------------------------------- #

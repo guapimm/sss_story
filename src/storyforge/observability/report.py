@@ -352,6 +352,43 @@ def cost_by_currency(records: list[LLMCallRecord]) -> dict[str, float]:
     return totals
 
 
+def persist_calls(records: list[LLMCallRecord], db: Any) -> int:
+    """把调用记录写进 `llm_calls` 表，返回**实际写入行数**。
+
+    ★ 为什么需要它（S0 真实取证暴露的断点）：
+    `record_to_row()` 早就写好了，但**全仓零生产调用点** ——
+    只有定义、`__all__` 和测试在引用；`config.py` 的
+    `persist_calls=True` 也没有任何读取方。
+    后果：`llm_calls` 表**永远 0 行**，于是
+
+      · 费用摘要只在**本次进程内**有效，跨运行查不到账；
+      · "这次 S0 花了多少点数"无法事后回答 —— 而成本正是 S0 验收五维之一。
+
+    设计取舍：
+      · **不抛异常**。落库失败不得让已经跑完（且已付费）的生成失败 ——
+        与 `_register_book` / 实体入库同一纪律；但调用方应把返回值与
+        `problems` 打印出来，**不静默**。
+      · `call_id` 唯一 → 用 `INSERT OR IGNORE` 语义天然幂等，
+        重跑同一章不会因重复主键炸掉（LangGraph 重放场景）。
+    """
+    if not records:
+        return 0
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    from storyforge.infra.storage.models import LLMCall
+
+    rows = [record_to_row(r) for r in records]
+    written = 0
+    with db.session() as sess:
+        for row in rows:
+            stmt = sqlite_insert(LLMCall).values(**row)
+            # 唯一键冲突 → 跳过（重放同一章不应炸）
+            stmt = stmt.on_conflict_do_nothing(index_elements=["call_id"])
+            written += sess.execute(stmt).rowcount or 0
+        sess.flush()
+    return written
+
+
 __all__ = [
     "CONTEXT_SOURCES",
     "CallCollector",
@@ -367,4 +404,5 @@ __all__ = [
     "row_to_record",
     "build_report",
     "cost_by_currency",
+    "persist_calls",
 ]

@@ -8,7 +8,9 @@ app_name = "storyforge"
 mode = "story"                 # 一期只做 story（D-08）；learn 预留接口
 
 [llm]
-default_timeout_s = 300.0
+# 单次调用超时（秒）。★ 必须与输出上限相容，否则 cap 不可达。
+# 实测吞吐 13.7 tok/s（MiMo v2.6-flash，2026-09-26）：cap 32768 需 ~2392s。
+default_timeout_s = 2400.0
 max_attempts = 3
 stream_idle_min_s = 20.0       # 流式空闲超时下限（防卡死，旧项目书17/18 根因）
 stream_idle_max_s = 60.0
@@ -103,7 +105,10 @@ repair_attempts = 5
 [pipeline]
 # 三级流水线（D-13）：骨架 → 细纲 → 正文，阶段间并行 / 阶段内串行
 skeleton_batch_size = 50
-detail_batch_size = 15
+# ⚠️ 必须保持 5：实测 15 章 = 328s，在当年的 300s 超时下**连续 3 次超时、整批作废**
+#    （失败批次不落盘 → 那批 token 全白烧）。约束测试见 tests/unit/test_batch_budget.py。
+#    注意超时后来提到 2400s，故"15 会超时"不再是理由；仍取 5 是为了限制单批白烧量。
+detail_batch_size = 5
 chapter_lead_limit = 3         # 正文最多领先细纲 3 章
 gate_poll_interval_s = 2.0
 gate_timeout_s = 3600.0

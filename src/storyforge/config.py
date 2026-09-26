@@ -50,7 +50,20 @@ class LLMSettings(BaseModel):
     节点按「能力需求」选模型（决策 D-09）。此处只放调用行为参数。
     """
 
-    default_timeout_s: float = 300.0
+    #: 单次调用超时（秒）。
+    #:
+    #: ★ 必须与 `ClientConfig.max_output_tokens_cap` **相容**，否则配置自相矛盾。
+    #:
+    #: 实测（2026-09-26 真实 S0，MiMo v2.6-flash）：吞吐 **13.7 tok/s**。
+    #: 旧值 300s 只够 ~4,110 token（≈5,870 中文字），而输出上限 `cap=32768`
+    #: 需要 **2,392s** —— 也就是说 `cap` 在旧超时下**物理不可达**，
+    #: 长章/细纲批次会以"超时"收场，把配置缺陷伪装成"模型慢"。
+    #:
+    #: 取 2,400s 的理由：正好覆盖 `cap=32768` 在实测吞吐下跑满所需的时间，
+    #: 使"输出上限"与"超时上限"**互不成为对方的隐形天花板**。
+    #: 代价是单次调用最长可挂 40 分钟 —— 但真实失败大多来自 provider 拒绝
+    #: 或空输出，那些会立刻返回，不会真的等满。
+    default_timeout_s: float = 2400.0
     max_attempts: int = 3
 
     #: 流式空闲超时下限/上限（旧项目实测：书17/18 卡死根因是缺少循环内静默检查）
@@ -356,6 +369,55 @@ class Settings(BaseSettings):
         env_nested_delimiter="__",
         extra="forbid",  # 拼错的环境变量必须报错，不静默忽略
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        """接入 `config/settings.toml` —— 此前该文件**从未被读取**。
+
+        ★ 断点（2026-09-26 核实）：`config/settings.toml` 自称"全局配置唯一入口
+        （决策 D-02）"，但 `SettingsConfigDict` **没有 `toml_file`**，
+        且全仓无任何读它的代码 —— 于是改它**零效果**，
+        而真正生效的是 `config.py` 的默认值。两个来源并存且互相矛盾，
+        正是本项目明令禁止的"两个来源竞争同一字段"（旧项目 L-06 同型）。
+
+        ## 优先级（早 → 高，**靠前者覆盖靠后者**）
+
+            1. `init_settings`（显式传参，如测试的 `configure()`）
+            2. `.env` / 环境变量 `STORYFORGE_*`   ← 本机覆盖，**必须高于 TOML**
+            3. `config/settings.toml`            ← 可提交的基线
+            4. 字段默认值（`Settings` 自身）
+
+        ⚠️ `settings_customise_sources` 返回的元组里**越靠前优先级越高**
+        （已实测：`TomlConfigSource` 放在 `env_settings` **之前**会让 TOML
+        覆盖环境变量 —— 那是错的，本机覆盖必须赢）。故 TOML 排在 env **之后**。
+
+        ★ 环境变量仍高于 TOML，因此本改动**不改变任何既有行为** ——
+        已逐键核对：接入前 TOML 每个键的值都与 `config.py` 默认值相同
+        （唯一真分歧 `detail_batch_size=15` 与 `default_timeout_s=300`
+        是 TOML 自身过期，已一并修正为 5 / 2400，见该文件注释）。
+
+        TOML 不存在时**静默跳过** —— 安装态可能没有它，
+        而"没有配置文件"是合法状态，不是错误。
+        """
+        from pydantic_settings import TomlConfigSettingsSource
+
+        toml_path = DEFAULT_CONFIG_DIR / "settings.toml"
+        if not toml_path.exists():
+            return (init_settings, env_settings, dotenv_settings, file_secret_settings)
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+            TomlConfigSettingsSource(settings_cls, toml_file=toml_path),
+        )
 
     app_name: str = "storyforge"
     data_dir: Path = DEFAULT_DATA_DIR
