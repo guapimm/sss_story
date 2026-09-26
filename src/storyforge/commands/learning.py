@@ -330,8 +330,9 @@ def _do_gen(args: argparse.Namespace) -> int:
     # （会编造）。初版先打"用 LLM 生成…"再判断，导致输出**误导**
     # （打印了 LLM 却走了离线路径）—— 实测发现后把提示移到分支内。
     #
-    # ★ 生成逻辑已拆到 `learning_gen.py`（契约规则 10：单文件 ≤800 行，
-    #   本文件 2026-09-23 涨到 806 行被拦下）。拆的是**生成**，
+    # ★ 生成逻辑已拆到 `learning_gen.py`（当年触发点：规则 10 单文件 ≤800 行，
+    #   本文件 2026-09-23 涨到 806 行被拦下；该上限已于 2026-09-26 取消）。
+    #   拆的依据是**依赖方向**：生成要调 LLM，读写/CLI 操作是纯 I/O。
     #   本文件保留**读写与 CLI 操作**（show/accept/edit/rollback）。
     use_llm = not args.offline and has_api_key() and bool(raw_snippets)
     if not use_llm and not args.offline and has_api_key() and not raw_snippets:

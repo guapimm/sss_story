@@ -2,8 +2,8 @@
 
 ## 为什么从 `chapter.py` 拆出来
 
-契约规则 10 把 `build_chapter_graph` 拦在了 **321 行**（上限 200）。
-这不是形式主义：旧项目 `_commit_chapter` 就是 **1,239 行**，
+契约规则 10 把 `build_chapter_graph` 拦在了 **321 行**（单函数上限 200，
+**该上限仍然有效**）。这不是形式主义：旧项目 `_commit_chapter` 就是 **1,239 行**，
 项目自己的 `ARCHITECTURE_MAP.md` 把它列为结构债。
 
 拆法：每个节点一个**工厂函数**（`make_xxx_node(deps) -> node`），
