@@ -328,6 +328,30 @@ def build_report(records: list[LLMCallRecord]) -> TokenReport:
     return rep
 
 
+def cost_by_currency(records: list[LLMCallRecord]) -> dict[str, float]:
+    """按**币种**分别汇总成本 —— **绝不跨单位相加**。
+
+    ★ 为什么必须分开：MiMo 走 Token Plan，单价单位是**点数（CREDITS）**；
+    其余 provider 是**美元**。旧项目只有一套 MiMo 点数权重却用在占 61%
+    流量的另一家 provider 上 → 跨单位混算，成本完全失真。
+
+    因此这里返回 `{"CREDITS": 1234.5, "USD": 0.42}` 而不是一个标量。
+    调用方按币种分别展示，不合并。
+    """
+    totals: dict[str, float] = {}
+    for model, agg in build_report(records).by_model.items():
+        p = pricing_for(model)
+        amount = p.cost_of(
+            UsageMetrics(
+                prompt_tokens=agg.get("prompt", 0),
+                cached_tokens=agg.get("cached", 0),
+                completion_tokens=agg.get("completion", 0),
+            )
+        )
+        totals[p.currency] = totals.get(p.currency, 0.0) + amount
+    return totals
+
+
 __all__ = [
     "CONTEXT_SOURCES",
     "CallCollector",
@@ -342,4 +366,5 @@ __all__ = [
     "record_to_row",
     "row_to_record",
     "build_report",
+    "cost_by_currency",
 ]

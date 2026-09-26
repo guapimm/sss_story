@@ -305,11 +305,15 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _make_client() -> Any:
+def _make_client(args: argparse.Namespace | None = None) -> Any:
     """构造接真实模型的 LLMClient（LangChain 传输层）。
 
     ★ 这是"基于 langchain"的落地处：`LLMClient` 的 `transport` 走
     `ChatOpenAI`。缺 API key 时**显式报错**（不静默空跑）。
+
+    ★ 预算闸门**只在显式传参时启用**（负责人 2026-09-26 裁决）：
+    三个预算参数默认 `None`，不传就是旧行为。**刻意不设默认上限** ——
+    真实模型运行的成本帽必须由人当场决定，不能由代码里一个占位值代替。
     """
     from storyforge.infra.llm.client import ClientConfig, LLMClient
     from storyforge.infra.llm.transport import make_transport
@@ -320,8 +324,67 @@ def _make_client() -> Any:
         config=ClientConfig(
             max_attempts=s.llm.max_attempts,
             timeout_s=s.llm.default_timeout_s,
+            max_provider_requests=getattr(args, "max_requests", None),
+            max_prompt_chars=getattr(args, "max_prompt_chars", None),
+            max_configured_credits=getattr(args, "max_credits", None),
         ),
     )
+
+
+def _add_budget_args(p: argparse.ArgumentParser) -> None:
+    """给需要花钱的子命令挂上预算参数（`plan` / `write`）。
+
+    ★ 全部默认 `None` = 不启用。要真实跑 S0 就**必须**显式给出上限，
+    否则第一次越线时没有任何东西会停下来。
+    """
+    p.add_argument(
+        "--max-requests", type=int, default=None,
+        help="provider 请求数硬上限（含重试；默认不启用）。真实运行务必设置",
+    )
+    p.add_argument(
+        "--max-prompt-chars", type=int, default=None,
+        help="单次 prompt 字符数硬上限（默认不启用）",
+    )
+    p.add_argument(
+        "--max-credits", type=float, default=None,
+        help="MiMo 点数（CREDITS）上限；按返回 usage 事后累计，"
+             "越线即停机（最后一次请求可能越线）。默认不启用",
+    )
+
+
+def _print_cost_summary(client: Any) -> None:
+    """打印本次运行的调用与成本摘要（按**币种分开**，不跨单位相加）。
+
+    ★ 为什么必须给出：没有它就无法回答"这次 S0 花了多少点数"，
+    而成本正是 S0 验收的五个维度之一。
+    """
+    from storyforge.observability.report import cost_by_currency
+
+    print()
+    if getattr(client, "budget_stopped", False):
+        print(f"■ 预算已停机：{client.budget_stop_reason}")
+    if getattr(client, "unknown_usage", False):
+        print("■ ⚠️ 出现过**无法记账**的调用（缺 usage / usage 非法）")
+    if not client.records:
+        print("LLM 调用 0 次（未产生任何费用）")
+        return
+
+    rep_client = client.records
+    print(f"LLM 调用 {len(rep_client)} 次，"
+          f"空输出率 {client.blank_rate():.1%}（旧项目实测 22.2%）")
+    costs = cost_by_currency(rep_client)
+    if not costs:
+        print("成本：无可用单价（检查 config/providers.toml 的 pricing）")
+        return
+    # ★ 分币种展示：CREDITS 与 USD 是不同单位，**不相加**
+    parts = [
+        f"{amount:,.4f} {currency}" if currency == "CREDITS"
+        else f"${amount:,.4f} {currency}"
+        for currency, amount in sorted(costs.items())
+    ]
+    print(f"成本：{'  |  '.join(parts)}")
+    if getattr(client, "configured_credits", 0.0):
+        print(f"其中已记账点数：{client.configured_credits:,.4f} CREDITS")
 
 
 def _artifacts():
@@ -385,7 +448,7 @@ def _guard_api_key() -> int | None:
     return None
 
 
-async def _run_plan(args: argparse.Namespace) -> int:
+async def _run_plan(args: argparse.Namespace, client: Any = None) -> int:
     from storyforge.graph.graphs.books import thread_config
     from storyforge.graph.graphs.books import (
         build_bible_graph,
@@ -395,7 +458,9 @@ async def _run_plan(args: argparse.Namespace) -> int:
     )
 
     store = _artifacts()
-    client = _make_client()
+    # ★ 默认自己造；`cmd_plan` 传入自己那份，好让**预算状态与调用记录
+    #   在 `_run_plan` 返回后仍可读**（否则摘要拿到的是空记录）。
+    client = client if client is not None else _make_client(args)
     # ★ 0-7：经 `_graph_deps()` 接线仓储（伤势恢复链路的 ③ 环）
     deps = _graph_deps(client=client)
     s = get_settings()
@@ -491,13 +556,34 @@ async def _run_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _budget_exit(rc: int, client: Any) -> int:
+    """预算停机必须产生**非零退出**。
+
+    ★ 为什么不能只打印一行警告：脚本/CI 只看退出码。若预算停机仍返回 0，
+    批量跑批会把"钱花光了、后半本没写"当成成功，继续下一本。
+
+    退出码 `3` 与通用失败 `1` 区分开 —— S0 取证时要能一眼看出
+    "是撞了预算"还是"生成失败"，这两者的后续动作完全不同。
+    """
+    if getattr(client, "budget_stopped", False) and rc == 0:
+        print("预算停机 → 按失败处理（退出码 3）。", file=sys.stderr)
+        return 3
+    return rc
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     import asyncio
 
     rc = _guard_api_key()
     if rc is not None:
         return rc
-    return asyncio.run(_run_plan(args))
+    client = _make_client(args)
+    try:
+        rc = asyncio.run(_run_plan(args, client))
+    finally:
+        # 无论成败都要报账 —— 失败的那次一样烧了钱
+        _print_cost_summary(client)
+    return _budget_exit(rc, client)
 
 
 # --------------------------------------------------------------------------- #
@@ -505,12 +591,13 @@ def cmd_plan(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 
 
-async def _run_write(args: argparse.Namespace) -> int:
+async def _run_write(args: argparse.Namespace, client: Any = None) -> int:
     from storyforge.graph.graphs.chapter import ChapterDeps, build_chapter_graph
     from storyforge.graph.graphs.books import thread_config
 
     store = _artifacts()
-    client = _make_client()
+    # ★ 同 `_run_plan`：由调用方传入，预算状态与记录才留得住
+    client = client if client is not None else _make_client(args)
 
     # ★ 实体/关系仓储：**可选注入**，与 `_graph_deps` 里伤势仓储同样的纪律
     #   （数据库不可用不阻断写作，但要**明确说明**未入库，不静默降级）。
@@ -571,11 +658,13 @@ async def _run_write(args: argparse.Namespace) -> int:
             if status in ("write_failed", "blocked"):
                 break
 
+        # ★ 预算停机后**立刻停止后续章** —— 否则每章都会再撞一次，
+        #   白跑一遍调度与盘上读写，且日志被同样的错误刷屏。
+        if getattr(client, "budget_stopped", False):
+            print("\n预算停机，停止后续章。", file=sys.stderr)
+            break
+
     print(f"\n完成 {done} 章。")
-    if client.records:
-        blank = client.blank_rate()
-        print(f"LLM 调用 {len(client.records)} 次，空输出率 {blank:.1%}"
-              f"（旧项目实测 22.2%）")
     return 0
 
 
@@ -585,7 +674,13 @@ def cmd_write(args: argparse.Namespace) -> int:
     rc = _guard_api_key()
     if rc is not None:
         return rc
-    return asyncio.run(_run_write(args))
+    client = _make_client(args)
+    try:
+        rc = asyncio.run(_run_write(args, client))
+    finally:
+        # 无论成败都要报账 —— 失败的那次一样烧了钱
+        _print_cost_summary(client)
+    return _budget_exit(rc, client)
 
 
 # --------------------------------------------------------------------------- #
@@ -673,6 +768,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="本卷先生成几章细纲（默认 25）。**不是全书章数**",
     )
     pn.add_argument("--volume", type=int, default=1, help="先做第几卷（默认 1）")
+    _add_budget_args(pn)
     pn.set_defaults(func=cmd_plan)
 
     w = sub.add_parser("write", help="单章闭环：写作 → 打分 → 审校 → 抽取（需 API key）")
@@ -680,6 +776,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--start", type=int, default=1, help="起始章号（默认 1）")
     w.add_argument("--chapters", type=int, default=1, help="写几章（默认 1）")
     w.add_argument("--volume", type=int, default=1)
+    _add_budget_args(w)
     w.set_defaults(func=cmd_write)
 
     rp = sub.add_parser("report", help="Token 与成本报告")
