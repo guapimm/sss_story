@@ -438,27 +438,30 @@ def test_rule09_no_business_instance_named_modules(src_root: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 规则 10：文件与函数规模
+# 规则 10：函数规模
 # --------------------------------------------------------------------------- #
 
 
-MAX_FILE_LINES = 800
 MAX_FUNC_LINES = 200
 
 
-def test_rule10_file_and_function_size_limits(src_root: Path) -> None:
-    """规则 10：单文件 ≤800 行、单函数 ≤200 行。
+def test_rule10_function_size_limit(src_root: Path) -> None:
+    """规则 10：单函数 ≤200 行。
 
-    防的是旧项目 `pipeline.py` **8,607 行**、`_commit_chapter` 单函数
-    **1,239 行**（项目自己在 ARCHITECTURE_MAP.md 中承认是结构债）。
+    防的是旧项目 `_commit_chapter` 单函数 **1,239 行**（项目自己在
+    ARCHITECTURE_MAP.md 中承认是结构债）。
+
+    ★ 单文件 800 行上限**已于 2026-09-26 取消**（负责人要求）。原因见
+    `doc/07-工作方式与目标导向.md` §2.1.1：行数只回答"**已经**太大了吗"，
+    不回答"该拆了吗"，却频繁在 770~800 行处卡住正常的代码演进。
+    拆分的判据是**耦合**（一个文件装着互不相关的职责、改 A 总要顺带改 B），
+    由人按职责判断，不由行数阈值触发。
+
+    单函数上限**保留**：它是真实的复杂度信号（一个函数装了几百行控制流，
+    读不完、测不了），且当前全仓最大仅 178 行，不构成摩擦。
     """
-    file_offenders: list[str] = []
     func_offenders: list[str] = []
     for path in _iter_py(src_root):
-        text = path.read_text(encoding="utf-8")
-        n_lines = text.count("\n") + 1
-        if n_lines > MAX_FILE_LINES:
-            file_offenders.append(f"{path.relative_to(src_root)}: {n_lines} 行")
         tree = _parse(path)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -467,7 +470,6 @@ def test_rule10_file_and_function_size_limits(src_root: Path) -> None:
                     func_offenders.append(
                         f"{path.relative_to(src_root)}:{node.lineno} {node.name} = {span} 行"
                     )
-    assert not file_offenders, "文件过长：\n  " + "\n  ".join(file_offenders)
     assert not func_offenders, "函数过长：\n  " + "\n  ".join(func_offenders)
 
 

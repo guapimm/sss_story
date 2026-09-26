@@ -746,3 +746,162 @@ def test_describe_error_never_empty() -> None:
 
     # 有消息的异常：原样保留
     assert _describe_error(ValueError("bad value")) == "bad value"
+
+
+# --------------------------------------------------------------------------- #
+# S0 可选预算闸门
+# --------------------------------------------------------------------------- #
+
+
+async def test_budget_provider_request_limit_counts_retries_and_stops() -> None:
+    """请求上限是硬 provider-attempt 上限，并跨 complete 调用累计。"""
+    client, transport = make_client(config=ClientConfig(
+        max_attempts=3, backoff_base_s=0.0, max_provider_requests=2))
+    first = await client.complete(node="chapter_writer", system="s", user="u")
+    second = await client.complete(node="chapter_writer", system="s", user="u")
+    assert first.text == second.text == "ok"
+    with pytest.raises(LLMError, match="provider request budget"):
+        await client.complete(node="chapter_writer", system="s", user="u")
+    assert len(transport.calls) == client.provider_attempts == 2
+    assert client.budget_stopped
+
+
+async def test_budget_rejects_explicit_output_tokens_above_cap() -> None:
+    client, transport = make_client(config=ClientConfig(
+        max_attempts=1, backoff_base_s=0.0, max_provider_requests=2,
+        max_output_tokens_cap=20))
+    with pytest.raises(LLMError, match="max_output_tokens_cap"):
+        await client.complete(node="chapter_writer", system="s", user="u",
+                              max_output_tokens=21)
+    assert not transport.calls
+
+
+async def test_budget_prompt_character_limit_is_hard() -> None:
+    client, transport = make_client(config=ClientConfig(
+        max_attempts=1, backoff_base_s=0.0, max_prompt_chars=3))
+    with pytest.raises(LLMError, match="prompt character budget"):
+        await client.complete(node="chapter_writer", system="ab", user="cd")
+    assert not transport.calls
+
+
+async def test_budget_missing_usage_stops_without_retry() -> None:
+    client, transport = make_client([("ok", {"prompt_tokens": 10})], config=ClientConfig(
+        max_attempts=3, backoff_base_s=0.0, max_provider_requests=5))
+    with pytest.raises(LLMError, match="usage missing completion_tokens"):
+        await client.complete(node="chapter_writer", system="s", user="u")
+    assert len(transport.calls) == 1
+    assert client.unknown_usage and client.budget_stopped
+
+
+async def test_budget_timeout_stops_without_retry() -> None:
+    import asyncio
+
+    async def hang(**_kw):
+        await asyncio.sleep(30)
+        return "", {}
+
+    client = LLMClient(hang, config=ClientConfig(
+        max_attempts=3, timeout_s=0.01, backoff_base_s=0.0,
+        max_provider_requests=5))
+    with pytest.raises(LLMError, match="budget stopped.*timeout"):
+        await client.complete(node="chapter_writer", system="s", user="u")
+    assert client.provider_attempts == 1 and client.budget_stopped
+
+
+async def test_budget_transport_error_stops_without_retry_or_error_text_leak() -> None:
+    calls = 0
+
+    async def broken(**_kw):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("secret provider response")
+
+    client = LLMClient(broken, config=ClientConfig(
+        max_attempts=3, backoff_base_s=0.0, max_provider_requests=5))
+    with pytest.raises(LLMError, match="budget stopped after provider error") as exc:
+        await client.complete(node="chapter_writer", system="s", user="u")
+    assert calls == client.provider_attempts == 1
+    assert client.budget_stopped
+    assert "secret provider response" not in str(exc.value)
+
+
+async def test_budget_blank_response_is_metered_before_retry() -> None:
+    client, transport = make_client([
+        ("", {"prompt_tokens": 1000, "completion_tokens": 500}),
+        ("ok", {"prompt_tokens": 1000, "completion_tokens": 500}),
+    ], config=ClientConfig(max_attempts=2, backoff_base_s=0.0,
+                           max_provider_requests=2, max_configured_credits=0.5))
+    result = await client.complete(node="chapter_writer", system="s", user="u")
+    assert result.text == "ok"
+    assert len(transport.calls) == 2
+    assert client.configured_credits == pytest.approx(0.4)
+
+
+async def test_budget_idempotency_hit_does_not_count_provider_request() -> None:
+    client, transport = make_client(config=ClientConfig(
+        max_attempts=1, backoff_base_s=0.0, max_provider_requests=1))
+    key = "budget-cache"
+    first = await client.complete(node="chapter_writer", system="s", user="u",
+                                  context=CallContext(node="chapter_writer", idempotency_key=key))
+    cached = await client.complete(node="chapter_writer", system="s", user="u",
+                                   context=CallContext(node="chapter_writer", idempotency_key=key))
+    assert not first.from_cache and cached.from_cache
+    assert len(transport.calls) == client.provider_attempts == 1
+
+
+async def test_budget_credits_can_cross_only_on_last_request_and_then_stop() -> None:
+    client, transport = make_client([("ok", {
+        "prompt_tokens": 1000, "completion_tokens": 500,
+    })], config=ClientConfig(max_attempts=1, backoff_base_s=0.0,
+                             max_provider_requests=3, max_configured_credits=0.1))
+    with pytest.raises(LLMError, match="configured Credits.*exceeded.*may cross"):
+        await client.complete(node="chapter_writer", system="s", user="u")
+    assert len(transport.calls) == client.provider_attempts == 1
+    assert client.configured_credits > 0.1
+    assert client.budget_stopped
+    with pytest.raises(LLMError, match="budget stopped"):
+        await client.complete(node="chapter_writer", system="s", user="u")
+    assert len(transport.calls) == 1
+
+
+async def test_budget_exact_credit_cap_blocks_next_request_before_transport() -> None:
+    client, transport = make_client([("ok", {
+        "prompt_tokens": 1000, "completion_tokens": 500,
+    })], config=ClientConfig(max_attempts=1, backoff_base_s=0.0,
+                             max_provider_requests=3, max_configured_credits=0.2))
+    await client.complete(node="chapter_writer", system="s", user="u")
+    assert client.configured_credits == pytest.approx(0.2)
+    with pytest.raises(LLMError, match="configured Credits budget reached"):
+        await client.complete(node="chapter_writer", system="s", user="u")
+    assert len(transport.calls) == client.provider_attempts == 1
+    assert client.budget_stopped
+
+
+async def test_budget_invalid_usage_stops_without_leaking_payload() -> None:
+    client, transport = make_client([("ok", {
+        "prompt_tokens": 10, "completion_tokens": 5, "cached_tokens": 11,
+        "private_marker": "do-not-report",
+    })], config=ClientConfig(max_attempts=2, backoff_base_s=0.0,
+                             max_provider_requests=5))
+    with pytest.raises(LLMError, match="invalid usage.*ValidationError") as exc:
+        await client.complete(node="chapter_writer", system="s", user="u")
+    assert len(transport.calls) == client.provider_attempts == 1
+    assert client.unknown_usage and client.budget_stopped
+    assert "do-not-report" not in str(exc.value)
+    assert "cached_tokens" not in str(exc.value)
+
+
+async def test_unbudgeted_call_keeps_existing_retry_behavior() -> None:
+    """无预算参数时仍允许 transport 异常后按既有策略重试。"""
+    calls = 0
+
+    async def flaky(**_kw):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary")
+        return "ok", {"prompt_tokens": 10, "completion_tokens": 5}
+
+    client = LLMClient(flaky, config=ClientConfig(max_attempts=2, backoff_base_s=0.0))
+    assert (await client.complete(node="chapter_writer", system="s", user="u")).text == "ok"
+    assert calls == 2

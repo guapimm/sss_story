@@ -43,7 +43,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -59,6 +58,11 @@ from storyforge.infra.llm.capability import (
     ProviderSpec,
     get_registry,
 )
+from storyforge.infra.llm.probe_budget import ProbeBudget, ProbeBudgetError
+from storyforge.infra.llm.structured_output import (
+    _summarize_validation_error,
+    extract_json as _extract_structured_json,
+)
 from storyforge.observability.metering import (
     ContextBreakdown,
     LLMCallRecord,
@@ -69,59 +73,6 @@ from storyforge.observability.metering import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
-
-
-#: JSON 字符串内部的**裸控制字符**（未转义的换行/制表/回车）。
-#:
-#: 实测（小米 MiMo）：模型在 JSON 字符串里直接换行 ——
-#:
-#:     {"worldview": "世界观围绕一座档案馆展开。
-#:     地下三层是绝对禁区。..."}
-#:
-#: 这在**中文长文本**上极常见（模型把"段落"当排版的一部分）。
-#: 而 JSON 禁止字符串内裸换行，`Invalid JSON: expected ':'` 即由此而来。
-#: 后果与旧项目 `entity_classify` 空输出 100% 同源：内容完全正确，
-#: 只因一个可机械修复的格式瑕疵，整条链路失败三次后放弃。
-#:
-#: 修法：只在**字符串字面量内部**转义（结构性的换行必须保留），
-#: 故用状态机逐字符扫描，而不是全局 `replace("\n", "\\n")`（那会毁掉结构）。
-_BARE_CONTROL_IN_STRING = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
-
-
-def _summarize_validation_error(exc: Exception | None) -> str:
-    """把 Pydantic 校验错误压成**模型能照着改的**简短清单。
-
-    Pydantic 完整报错含 URL、type 名、input 回显，一次能有两千字。
-    原样塞进修复 prompt 有两个坏处：稀释注意力（真正要改的只有"缺哪个字段"）、
-    白烧 token（每次修复都重发一遍）。
-
-    实测需要的信息只有三条：**哪个字段**、**期望什么**、**实际给了什么**
-    —— 压出来通常不到 200 字。
-    """
-    if exc is None:
-        return "（无错误详情）"
-    errors = getattr(exc, "errors", None)
-    if not callable(errors):
-        return str(exc)[:400]
-    try:
-        items = errors()
-    except Exception:  # noqa: BLE001
-        return str(exc)[:400]
-
-    lines: list[str] = []
-    for e in items[:12]:                       # 最多列 12 条，再多也没人看
-        loc = ".".join(str(x) for x in e.get("loc", ()))
-        msg = str(e.get("msg", ""))[:120]
-        etype = e.get("type", "")
-        if etype == "missing":
-            lines.append(f"- 缺必填字段：`{loc}`")
-        elif etype == "extra_forbidden":
-            lines.append(f"- 多出未定义字段：`{loc}`（请删除）")
-        else:
-            lines.append(f"- `{loc}`：{msg}")
-    if len(items) > 12:
-        lines.append(f"- …另有 {len(items) - 12} 处同类问题")
-    return "\n".join(lines) if lines else str(exc)[:400]
 
 
 def _describe_error(exc: Exception | None) -> str:
@@ -150,41 +101,6 @@ def _describe_error(exc: Exception | None) -> str:
     # 有异常对象但没有消息 —— 至少把类型与 args 带出来
     args = getattr(exc, "args", ())
     return f"{type(exc).__name__}" + (f"（args={args!r}）" if args else "（无消息）")
-
-
-def _repair_json(s: str) -> str:
-    """修复模型 JSON 输出的**常见机械瑕疵**。
-
-    只做**不改变语义**的修复（转义字符串内的裸控制字符）。
-    不做"补引号""猜键名"这类有歧义的修复 —— 那些应当报错，
-    让上游用具体的错误信息去重试。
-
-    扫描规则（单遍状态机）：
-      · 遇到未转义的 `"` → 翻转「是否在字符串内」
-      · 在字符串内遇到裸控制字符 → 替换成转义形式
-      · 字符串外的字符一律不动
-    """
-    out: list[str] = []
-    in_string = False
-    escaped = False
-    for ch in s:
-        if escaped:
-            out.append(ch)
-            escaped = False
-            continue
-        if ch == "\\":
-            out.append(ch)
-            escaped = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            out.append(ch)
-            continue
-        if in_string and ch in _BARE_CONTROL_IN_STRING:
-            out.append(_BARE_CONTROL_IN_STRING[ch])
-            continue
-        out.append(ch)
-    return "".join(out)
 
 
 class LLMError(RuntimeError):
@@ -299,6 +215,10 @@ class ClientConfig:
     min_output_tokens: int = 4096
     #: 输出预算上限（token）。防止误配成模型的完整上下文长度而白烧额度。
     max_output_tokens_cap: int = 32768
+    #: 可选 S0 预算闸门；全部为 None 时保持旧行为。
+    max_provider_requests: int | None = None
+    max_prompt_chars: int | None = None
+    max_configured_credits: float | None = None
 
 
 class LLMClient:
@@ -334,6 +254,35 @@ class LLMClient:
         self.config = config or ClientConfig()
         self.idempotency = idempotency or MemoryIdempotencyStore()
         self.records: list[LLMCallRecord] = collector if collector is not None else []
+        self._probe_budget = ProbeBudget(
+            max_provider_requests=self.config.max_provider_requests,
+            max_prompt_chars=self.config.max_prompt_chars,
+            max_configured_credits=self.config.max_configured_credits,
+        )
+
+    @property
+    def _budget_enabled(self) -> bool:
+        return self._probe_budget.enabled
+
+    @property
+    def provider_attempts(self) -> int:
+        return self._probe_budget.provider_attempts
+
+    @property
+    def configured_credits(self) -> float:
+        return self._probe_budget.configured_credits
+
+    @property
+    def unknown_usage(self) -> bool:
+        return self._probe_budget.unknown_usage
+
+    @property
+    def budget_stopped(self) -> bool:
+        return self._probe_budget.budget_stopped
+
+    @property
+    def budget_stop_reason(self) -> str | None:
+        return self._probe_budget.budget_stop_reason
 
     # -- 路由 ---------------------------------------------------------------
 
@@ -392,6 +341,12 @@ class LLMClient:
                     from_cache=True,
                 )
 
+        prompt_chars = len(system) + len(user)
+        try:
+            pricing = self._probe_budget.prepare(model, prompt_chars)
+        except ProbeBudgetError as exc:
+            raise LLMError(str(exc)) from None
+
         params: dict[str, Any] = dict(policy)
 
         # ★ 输出预算：显式下发 `max_tokens`，否则会被 provider 默认值坑死。
@@ -429,6 +384,12 @@ class LLMClient:
 
         last_err: Exception | None = None
         for attempt in range(1, self.config.max_attempts + 1):
+            try:
+                self._probe_budget.reserve_attempt(
+                    max_output_tokens, self.config.max_output_tokens_cap
+                )
+            except ProbeBudgetError as exc:
+                raise LLMError(str(exc)) from None
             ctx.attempt_no = attempt
             started = time.monotonic()
             try:
@@ -454,6 +415,10 @@ class LLMClient:
                     extra={"timeout_s": self.config.timeout_s},
                     prompt_chars=len(system) + len(user),
                 )
+                if self._budget_enabled:
+                    raise LLMError(self._probe_budget.stop(
+                        f"budget stopped after provider timeout: {last_err}"
+                    )) from None
                 await self._sleep_backoff(attempt)
                 continue
             except Exception as exc:  # noqa: BLE001
@@ -464,63 +429,20 @@ class LLMClient:
                     retry_reason="rate_limit" if self._is_rate_limit(exc) else None,
                     prompt_chars=len(system) + len(user),
                 )
+                if self._budget_enabled:
+                    raise LLMError(self._probe_budget.stop(
+                        f"budget stopped after provider error ({type(exc).__name__})"
+                    )) from None
                 await self._sleep_backoff(attempt)
                 continue
 
-            usage = self._parse_usage(usage_raw)
-            finish_reason = (usage_raw or {}).get("finish_reason")
-
-            # ★ 空输出：必须记录，且必须带诊断信息（见 `_blank_error`）
-            if not (text or "").strip():
-                prompt_chars = len(system) + len(user)
-                last_err = self._blank_error(
-                    finish_reason=finish_reason, model_id=model.id,
-                    prompt_chars=prompt_chars,
-                    reasoning_tokens=usage.reasoning_tokens,
-                )
-                self.records.append(
-                    self._record(
-                        ctx, model, provider, CallStatus.BLANK, usage,
-                        started=started,
-                        error_type=None if finish_reason else "BlankWithoutFinishReason",
-                        extra={
-                            "finish_reason": finish_reason or "unknown",
-                            "context_breakdown": context_breakdown,
-                            "prompt_prefix": prompt_prefix,
-                            "prompt_total_chars": prompt_chars,
-                        },
-                    )
-                )
-                logger.warning(
-                    "blank output: node=%s model=%s attempt=%d finish_reason=%s "
-                    "reasoning=%s prompt_chars=%d",
-                    node, model.id, attempt, finish_reason,
-                    usage.reasoning_tokens, prompt_chars,
-                )
-                await self._sleep_backoff(attempt)
-                continue
-
-            # 成功
-            self.records.append(
-                self._record(
-                    ctx, model, provider, CallStatus.OK, usage, started=started,
-                    extra={
-                        "finish_reason": finish_reason or "stop",
-                        "context_breakdown": context_breakdown,
-                        "prompt_prefix": prompt_prefix,
-                        "prompt_total_chars": len(system) + len(user),
-                        # ★ 缺陷1/A-16诊断：成功也记输出字符数 ——
-                        # 空输出/截断归因需要"输出多长"，不能只记 prompt 多长
-                        "response_chars": len(text or ""),
-                    },
-                )
+            result, attempt_err = self._record_response(
+                ctx, model, provider, text, usage_raw, started, pricing,
+                system, user, context_breakdown, prompt_prefix, cache_result,
             )
-            if ctx.idempotency_key and cache_result:
-                self.idempotency.put(ctx.idempotency_key, text)
-            return CallResult(
-                text=text, record=self.records[-1],
-                model=model.id, provider=provider.name,
-            )
+            if result is not None:
+                return result
+            last_err = attempt_err
 
         # ★ 兜底：绝不让报错信息在冒号后面空着。
         #
@@ -531,6 +453,79 @@ class LLMClient:
             f"节点 {node} 调用失败（{self.config.max_attempts} 次尝试）："
             f"{_describe_error(last_err)}"
         )
+
+    def _record_response(
+        self, ctx: CallContext, model: ModelCapability, provider: ProviderSpec,
+        text: str, usage_raw: dict[str, Any], started: float, pricing: Any,
+        system: str, user: str,
+        context_breakdown: ContextBreakdown | None, prompt_prefix: str | None,
+        cache_result: bool,
+    ) -> tuple[CallResult | None, Exception | None]:
+        prompt_chars = len(system) + len(user)
+        try:
+            usage = self._parse_usage(usage_raw)
+        except Exception as exc:  # noqa: BLE001
+            if not self._budget_enabled:
+                raise
+            reason = self._probe_budget.unknown(
+                f"invalid usage payload ({type(exc).__name__})"
+            )
+            self._record_failure(
+                ctx, model, provider, CallStatus.FAILED, started,
+                error_type="InvalidUsage", prompt_chars=prompt_chars,
+            )
+            raise LLMError(reason) from None
+        finish_reason = (usage_raw or {}).get("finish_reason")
+
+        if self._budget_enabled:
+            usage_stop = self._probe_budget.observe_usage(usage, pricing)
+            if self.unknown_usage:
+                self._record_failure(
+                    ctx, model, provider, CallStatus.FAILED, started,
+                    error_type="UnknownUsage", prompt_chars=prompt_chars,
+                )
+                raise LLMError(usage_stop or "budget stopped: unknown usage")
+
+        if not (text or "").strip():
+            blank_error = self._blank_error(
+                finish_reason=finish_reason, model_id=model.id,
+                prompt_chars=prompt_chars, reasoning_tokens=usage.reasoning_tokens,
+            )
+            self.records.append(self._record(
+                ctx, model, provider, CallStatus.BLANK, usage, started=started,
+                error_type=None if finish_reason else "BlankWithoutFinishReason",
+                extra={
+                    "finish_reason": finish_reason or "unknown",
+                    "context_breakdown": context_breakdown,
+                    "prompt_prefix": prompt_prefix,
+                    "prompt_total_chars": prompt_chars,
+                },
+            ))
+            logger.warning(
+                "blank output: node=%s model=%s attempt=%d finish_reason=%s "
+                "reasoning=%s prompt_chars=%d",
+                ctx.node, model.id, ctx.attempt_no, finish_reason,
+                usage.reasoning_tokens, prompt_chars,
+            )
+            if self.budget_stopped:
+                raise LLMError(f"budget stopped: {self.budget_stop_reason}")
+            return None, blank_error
+
+        self.records.append(self._record(
+            ctx, model, provider, CallStatus.OK, usage, started=started,
+            extra={
+                "finish_reason": finish_reason or "stop",
+                "context_breakdown": context_breakdown,
+                "prompt_prefix": prompt_prefix,
+                "prompt_total_chars": prompt_chars,
+                "response_chars": len(text or ""),
+            },
+        ))
+        if self.budget_stopped:
+            raise LLMError(f"budget stopped: {self.budget_stop_reason}")
+        if ctx.idempotency_key and cache_result:
+            self.idempotency.put(ctx.idempotency_key, text)
+        return CallResult(text, self.records[-1], model.id, provider.name), None
 
     async def complete_structured(
         self,
@@ -601,30 +596,8 @@ class LLMClient:
 
     @staticmethod
     def _extract_json(text: str) -> str:
-        """从模型输出中提取 JSON（剥离代码块、前后缀，并**修复常见语法瑕疵**）。"""
-        s = (text or "").strip()
-        if s.startswith("```"):
-            nl = s.find("\n")
-            if nl != -1:
-                s = s[nl + 1 :]
-            if s.rstrip().endswith("```"):
-                s = s.rstrip()[:-3]
-        s = s.strip()
-        # 找到第一个 { 与最后一个 }
-        i, j = s.find("{"), s.rfind("}")
-        if i != -1 and j != -1 and j > i:
-            s = s[i : j + 1]
-        else:
-            i, j = s.find("["), s.rfind("]")
-            if i != -1 and j != -1 and j > i:
-                s = s[i : j + 1]
-        # 先试原样，能解析就不动它（**不冒险改写正确输入**）
-        try:
-            json.loads(s)
-            return s
-        except (ValueError, TypeError):
-            pass
-        return _repair_json(s)
+        """兼容入口；机械 JSON 处理在独立模块内完成。"""
+        return _extract_structured_json(text)
 
     @staticmethod
     def _is_rate_limit(exc: Exception) -> bool:
