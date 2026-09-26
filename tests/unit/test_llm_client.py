@@ -312,6 +312,115 @@ async def test_structured_output_raises_after_retries() -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# ★★ 结构化修复重试 × 幂等缓存（S0 侦察发现的真实缺陷）
+# --------------------------------------------------------------------------- #
+
+
+async def test_structured_repair_retry_works_with_idempotency_key() -> None:
+    """★★ 带 `idempotency_key` 时，修复重试必须能**真正再次请求模型**。
+
+    ## 防的是什么（实测缺陷，S0 侦察发现）
+
+    `complete()` 曾在 **schema 校验之前**就把原始文本写进幂等缓存，
+    而 `complete_structured` 的修复重试**重用同一个 key**，于是：
+
+        第 1 次：模型返回非法 JSON → 写进缓存
+        第 2 次（修复重试）→ **命中缓存** → 拿到同一份非法 JSON → 再失败
+        ⇒ 一次格式瑕疵 = 硬失败，零可用输出
+
+    ★ 影响面是**所有**传 key 的结构化节点（抽取 3 + 审校 2 + 章节 2）——
+    而它们**都**传 key。即"一次坏 JSON 废掉整章"。
+
+    ## 为什么这条测试当初没被发现
+
+    上一条 `test_structured_output_retries_with_error_feedback` 是同一场景，
+    但它**不传 `idempotency_key`** —— 于是完全绕开了缓存路径，
+    这个缺陷在测试里隐身。
+
+    ★ 教训（本项目已记录过同类）：**测试的输入漏掉了生产必填的那一项，
+    就等于没测那条路径**。生产节点全部传 key，测试也必须传。
+    """
+    from storyforge.infra.llm.client import CallContext
+
+    client, transport = make_client(
+        [
+            ('{"name":"x"}', {}),               # 第 1 次：缺必填字段 value
+            ('{"name":"x","value":7}', {}),     # 第 2 次：修正后
+        ]
+    )
+    out, _ = await client.complete_structured(
+        node="scene_extractor", system="s", user="u", schema=Out,
+        context=CallContext(node="scene_extractor", idempotency_key="k:repair"),
+    )
+    assert out.value == 7, "带 key 时修复重试未能拿到修正后的结果"
+    assert len(transport.calls) == 2, (
+        f"修复重试没有真正请求模型（transport 只被调 {len(transport.calls)} 次）"
+    )
+
+
+async def test_structured_cache_holds_only_validated_output() -> None:
+    """★★ 幂等缓存里**只能有校验通过**的结果。
+
+    这条与上一条互补：上一条证明"重试能再次请求"，
+    这条证明"非法结果没被留在缓存里"（否则后续重放会拿到坏数据）。
+
+    ★ 为什么必须单独钉：`complete()` 的成功路径**不区分**校验结果，
+    所以"写缓存"这个副作用很容易又被挪回校验之前。
+    """
+    from storyforge.infra.llm.client import CallContext
+
+    key = "k:cache-valid-only"
+    client, transport = make_client(
+        [
+            ('{"name":"x"}', {}),               # 非法
+            ('{"name":"x","value":9}', {}),     # 合法
+        ]
+    )
+    ctx = CallContext(node="scene_extractor", idempotency_key=key)
+    out, _ = await client.complete_structured(
+        node="scene_extractor", system="s", user="u", schema=Out, context=ctx,
+    )
+    assert out.value == 9
+
+    # 缓存内容必须是**合法那份**
+    cached = client.idempotency.get(key)
+    assert cached is not None
+    assert "value" in cached, f"缓存里留的是非法输出：{cached!r}"
+
+    # 再次调用应命中缓存（0 次新请求）—— 幂等复用的正向价值仍然保留
+    before = len(transport.calls)
+    out2, _ = await client.complete_structured(
+        node="scene_extractor", system="s", user="u", schema=Out,
+        context=CallContext(node="scene_extractor", idempotency_key=key),
+    )
+    assert out2.value == 9
+    assert len(transport.calls) == before, "校验通过的调用应当可安全重放（走缓存）"
+
+
+async def test_plain_complete_still_caches_without_validation() -> None:
+    """`complete()` 的**默认行为不变** —— 非结构化调用照旧写缓存。
+
+    ★ 防的是"修 A 破 B"：`cache_result` 默认为 `True`，
+    只有 `complete_structured` 显式传 `False`。
+    """
+    from storyforge.infra.llm.client import CallContext
+
+    client, transport = make_client([("任意文本", {})])
+    key = "k:plain"
+    await client.complete(
+        node="chapter_writer", system="s", user="u",
+        context=CallContext(node="chapter_writer", idempotency_key=key),
+    )
+    assert client.idempotency.get(key) == "任意文本"
+
+    await client.complete(
+        node="chapter_writer", system="s", user="u",
+        context=CallContext(node="chapter_writer", idempotency_key=key),
+    )
+    assert len(transport.calls) == 1, "非结构化调用应当命中缓存（默认行为）"
+
+
 async def test_structured_output_error_message_includes_raw() -> None:
     """失败信息必须包含原始输出片段，便于排查（不是只有一句"解析失败"）。"""
     client, _ = make_client([("模型说了些废话但没给 JSON", {})])

@@ -73,38 +73,30 @@ T = TypeVar("T", bound=BaseModel)
 
 #: JSON 字符串内部的**裸控制字符**（未转义的换行/制表/回车）。
 #:
-#: ## 为什么必须修（实测）
-#:
-#: 真实运行（小米 MiMo）反复出现：模型在 JSON 字符串里直接换行 ——
+#: 实测（小米 MiMo）：模型在 JSON 字符串里直接换行 ——
 #:
 #:     {"worldview": "世界观围绕一座档案馆展开。
 #:     地下三层是绝对禁区。..."}
 #:
-#: 这在**中文长文本**上极其常见：模型把"段落"当成排版的一部分，
-#: 于是照着写换行。而 JSON 规范禁止字符串内出现裸换行
-#: （`Invalid JSON: expected ':'` 就是它引发的报错）。
-#:
+#: 这在**中文长文本**上极常见（模型把"段落"当排版的一部分）。
+#: 而 JSON 禁止字符串内裸换行，`Invalid JSON: expected ':'` 即由此而来。
 #: 后果与旧项目 `entity_classify` 空输出 100% 同源：内容完全正确，
 #: 只因一个可机械修复的格式瑕疵，整条链路失败三次后放弃。
 #:
-#: 修法是**在字符串字面量内部**把裸控制字符转义 —— 注意只在字符串内部动，
-#: 结构性的换行（键值之间）必须保留。所以这里用一个状态机逐字符扫描，
-#: 而不是全局 `replace("\n", "\\n")`（那会把 JSON 结构也毁掉）。
+#: 修法：只在**字符串字面量内部**转义（结构性的换行必须保留），
+#: 故用状态机逐字符扫描，而不是全局 `replace("\n", "\\n")`（那会毁掉结构）。
 _BARE_CONTROL_IN_STRING = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
 
 
 def _summarize_validation_error(exc: Exception | None) -> str:
     """把 Pydantic 校验错误压成**模型能照着改的**简短清单。
 
-    ## 为什么要压
+    Pydantic 完整报错含 URL、type 名、input 回显，一次能有两千字。
+    原样塞进修复 prompt 有两个坏处：稀释注意力（真正要改的只有"缺哪个字段"）、
+    白烧 token（每次修复都重发一遍）。
 
-    Pydantic 的完整报错含 URL、type 名、input 回显，一次能有两千字。
-    把它原样塞进修复 prompt 有两个坏处：
-      · 稀释注意力（真正要改的只有"缺哪个字段"）
-      · 白烧 token（每次修复都重发一遍）
-
-    实测需要的信息其实只有三条：**哪个字段**、**期望什么**、**实际给了什么**。
-    这三条压出来通常不到 200 字。
+    实测需要的信息只有三条：**哪个字段**、**期望什么**、**实际给了什么**
+    —— 压出来通常不到 200 字。
     """
     if exc is None:
         return "（无错误详情）"
@@ -363,12 +355,22 @@ class LLMClient:
         prompt_prefix: str | None = None,
         max_output_tokens: int | None = None,
         json_mode: bool = False,
+        cache_result: bool = True,
     ) -> CallResult:
         """单次补全（带重试、计量、幂等）。
 
         `json_mode=True` 时要求 provider 走**原生 JSON 输出**
         （`response_format={"type":"json_object"}`）。仅当模型声明
         `supports_json_mode` 时才会真正下发 —— 见 `_resolve`。
+
+        ## `cache_result=False`：由调用方**校验通过后**自行写缓存
+
+        ★★ 修的是一个真实缺陷（S0 侦察发现并复现）：`complete_structured`
+        的修复重试**曾完全失效** —— 本函数**在校验之前**就写缓存，而重试
+        **重用同一个 key** ⇒ 第 2 次命中第 1 次那份**非法 JSON**，一次格式
+        瑕疵 = 硬失败（实测：带 key 时 transport 只被调 **1** 次）。
+        影响面是**所有**传 key 的结构化节点（抽取 3 + 审校 2 + 章节 2）。
+        取证见 `scripts/probe_structured_retry_cache.py`。
         """
         ctx = context or CallContext(node=node)
         ctx.node = node
@@ -394,26 +396,18 @@ class LLMClient:
 
         # ★ 输出预算：显式下发 `max_tokens`，否则会被 provider 默认值坑死。
         #
-        # ## 实测发现的真实缺陷（多书测试书 16 细纲阶段）
-        #
-        # `ModelCapability.max_output_tokens` 从 `providers.toml` 读了进来
-        # （MiMo 声明 131072），但**从未下发给 API** —— 只有调用方显式传
-        # `max_output_tokens` 才设置，而所有节点都没传。
-        # 于是实际生效的是 provider 默认值（MiMo 上实测约 8000）：
+        # 实测缺陷（书 16 细纲阶段）：`max_output_tokens` 从 `providers.toml`
+        # 读了进来（MiMo 声明 131072）却**从未下发给 API** —— 只有调用方显式
+        # 传才设置，而所有节点都没传 → 生效的是 provider 默认值（约 8000）：
         #
         #     prompt 4126 字符 → completion=8000, reasoning=7900（98.75%）
-        #     finish_reason=length → 正文一个字都没写出来 → 三次尝试全废
+        #     finish_reason=length → 正文一个字都没写出 → 三次尝试全废
         #
-        # 这与旧项目 `max_tokens = max(4096, reasoning*4)`（思考与输出共用上限
-        # → 可用输出预算只剩 3x）是**同一类失败**：思考把输出挤没。
+        # 与旧项目 `max_tokens = max(4096, reasoning*4)`（思考与输出共用上限）
+        # 是同一类失败：**思考把输出挤没**。
         #
-        # ## 修法：默认用模型声明的上限，而不是 provider 默认值
-        #
-        # 调用方仍可显式覆盖（章节写作会传具体值）。这里只保证
-        # 「不传」时**不会**退化成一个小到被思考吃光的默认值。
-        #
-        # 两端都夹：下限保证正文有空间，上限防止把模型的完整上下文长度
-        # 当成输出预算（那会让每次调用都预留巨额额度）。
+        # 修法：默认用模型声明的上限（调用方仍可覆盖），两端都夹 ——
+        # 下限保证正文有空间，上限防止把完整上下文长度当输出预算。
         budget = max_output_tokens
         if budget is None:
             budget = min(
@@ -521,7 +515,7 @@ class LLMClient:
                     },
                 )
             )
-            if ctx.idempotency_key:
+            if ctx.idempotency_key and cache_result:
                 self.idempotency.put(ctx.idempotency_key, text)
             return CallResult(
                 text=text, record=self.records[-1],
@@ -574,10 +568,12 @@ class LLMClient:
                     f"{_summarize_validation_error(last_err)}\n"
                     f"只输出符合要求的 JSON，不要任何解释或代码块标记。"
                 )
+            # ★ `cache_result=False`：让本函数的修复重试**真能再次请求模型**
+            #   （否则第 2 次会命中第 1 次那份非法文本）。详见 `complete()`。
             result = await self.complete(
                 node=node, system=system, user=instr, context=ctx,
                 context_breakdown=context_breakdown, prompt_prefix=prompt_prefix,
-                json_mode=True,
+                json_mode=True, cache_result=False,
             )
             raw = result.text
             try:
@@ -589,6 +585,10 @@ class LLMClient:
                     node, attempt, str(exc)[:200],
                 )
                 continue
+            # ★ 校验通过后才写缓存 —— 缓存里**只有**可用结果，
+            #   于是"重放成功调用"仍省一次计费，而"重放非法 JSON"被消除。
+            if ctx.idempotency_key and not result.from_cache:
+                self.idempotency.put(ctx.idempotency_key, raw)
             return parsed, result
 
         raise StructuredOutputError(
