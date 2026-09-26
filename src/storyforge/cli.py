@@ -16,7 +16,7 @@ from typing import Any
 
 from storyforge import __version__
 from storyforge.commands.learn import add_learn_subparsers, cmd_flows, cmd_research
-from storyforge.config import REPO_ROOT, get_settings, reset_settings
+from storyforge.config import REPO_ROOT, get_settings, python_child_env, reset_settings
 from storyforge.doctor import run_doctor
 
 
@@ -66,11 +66,16 @@ def cmd_arch_check(args: argparse.Namespace) -> int:
     """运行架构契约测试（AST 检查）。"""
     import subprocess
 
+    # ★ 经 config.python_child_env() 钉死子进程 UTF-8（详见该函数 docstring）：
+    # 父进程按 utf-8 解码、子进程被注入 PYTHONIOENCODING=utf-8，
+    # 与调用方控制台是否 GBK 无关。契约规则 12：cli.py 不得直读 os.environ。
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/contract", "-q", "--no-header"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        env=python_child_env(),
     )
     tail = (proc.stdout or "").strip().splitlines()[-3:]
     print("\n".join(tail))

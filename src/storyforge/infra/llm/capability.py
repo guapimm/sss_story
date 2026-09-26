@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from storyforge.config import DEFAULT_CONFIG_DIR, REPO_ROOT
+from storyforge.config import get_settings
 
 #: 节点的思考需求。
 #:
@@ -318,7 +318,11 @@ def _parse_capability(raw: dict[str, Any]) -> ModelCapability:
 
 def load_registry(path: Path | None = None) -> ModelRegistry:
     """从 providers.toml 加载。文件缺失或格式错误一律抛错。"""
-    p = path or (DEFAULT_CONFIG_DIR / "providers.toml")
+    # ★ 经 get_settings().config_dir 按需解析（doc/11 §3.4）：
+    # 旧写法用 import 期冻结的模块常量 DEFAULT_CONFIG_DIR，安装态指向
+    # `<venv>\Lib\config`（不存在）——且 STORYFORGE_CONFIG_DIR 改不动它
+    # （与 modes/ 各加载器的行为不一致，PG-0 实测的真实缺陷）。
+    p = path or (get_settings().config_dir / "providers.toml")
     if not p.exists():
         raise ProviderConfigError(f"找不到 providers 配置：{p}")
     with p.open("rb") as f:

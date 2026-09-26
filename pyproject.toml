@@ -44,6 +44,14 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/storyforge"]
 
+# ★ PG-1A（doc/11 方案甲，决策已冻结）：config/ 留在仓库根，构建时映射进包内
+#   `storyforge/_resources/config` —— 运行时由 `config.resolve_config_dir()` 按需定位。
+#   源文件移动 0 个；sdist 不受影响（force-include 只作用于 wheel target，V3 已实测）。
+#   ⚠️ 目录绝不能叫 `storyforge/config`：与 `config.py` 同名会让 import 解析到模块
+#   （无 `__path__`），数据文件全部读不到（doc/11 §2.1 陷阱一）。
+[tool.hatch.build.targets.wheel.force-include]
+"config" = "storyforge/_resources/config"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

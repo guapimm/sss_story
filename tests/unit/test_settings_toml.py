@@ -72,9 +72,10 @@ def test_missing_toml_is_not_an_error(toml_path: Path, monkeypatch) -> None:
 
     但**不得**因此崩掉或把默认值变成 None。
     """
-    import storyforge.config as cfg
-
-    monkeypatch.setattr(cfg, "DEFAULT_CONFIG_DIR", toml_path.parent / "__nope__")
+    # ★ 经真正的解析接缝（STORYFORGE_CONFIG_DIR 指向不存在的目录）模拟"TOML 缺失"：
+    #   旧写法 monkeypatch 模块常量 DEFAULT_CONFIG_DIR，该常量已按 PG-1A 移除
+    #   （import 期冻结是它被移除的原因，doc/11 §2.4）。
+    monkeypatch.setenv("STORYFORGE_CONFIG_DIR", str(toml_path.parent / "__nope__"))
     reset_settings()
     try:
         s = Settings()

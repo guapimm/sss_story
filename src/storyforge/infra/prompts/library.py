@@ -39,7 +39,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from storyforge.config import REPO_ROOT
 from storyforge.domain.enums import (
     BeatType,
     EntityKind,
@@ -51,8 +50,14 @@ from storyforge.domain.enums import (
 )
 from storyforge.infra.llm.prompt_builder import PromptLayers
 
-#: prompt 模板目录
-PROMPTS_DIR = REPO_ROOT / "src" / "storyforge" / "infra" / "prompts"
+#: prompt 模板目录。
+#:
+#: ★ 锚点是**本模块所在目录**（`Path(__file__).parent`），不是 `REPO_ROOT/src/...`：
+#: 本文件就住在 `infra/prompts/` 里，prompt 的 md 文件又已随 wheel 分发
+#: （PG-0 实测清单里有 3 个 md），因此包内相对锚点在**源码树与安装态都正确**。
+#: 旧锚点 `REPO_ROOT / "src" / ...` 在安装态解析到 `<venv>\Lib\src\...` ——
+#: 文件就在旁边却读不到（PG-0 实测 B-1，`_load('writer_system')` 抛 FileNotFoundError）。
+PROMPTS_DIR = Path(__file__).resolve().parent
 
 
 def _load(name: str, *, pack: str = "") -> str:

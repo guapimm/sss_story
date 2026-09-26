@@ -31,11 +31,71 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # 路径
 # --------------------------------------------------------------------------- #
 
-#: 仓库根目录（src/storyforge/config.py -> 上溯三级）
+#: 仓库根目录（src/storyforge/config.py -> 上溯三级）。
+#:
+#: ★ 仅作**开发期辅助**（`arch-check` 的 cwd、`.env` 提示等），**不得**用作资源根：
+#: wheel 安装后本模块位于 `site-packages/storyforge/`，`parents[2]` 会解析到
+#: `<venv>\Lib` —— PG-0 实测 B-2（`REPO_ROOT/config` 与 `REPO_ROOT/data` 双双不存在）。
+#: 资源定位一律走 `resolve_config_dir()` / `resolve_data_dir()`。
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-DEFAULT_CONFIG_DIR = REPO_ROOT / "config"
-DEFAULT_DATA_DIR = REPO_ROOT / "data"
+
+#: 包内资源目录（本模块所在包 = `storyforge/` 的下一级 `_resources/config`）。
+#:
+#: ★ 锚点是 `Path(__file__).parent`（= 包目录本身）：源码树为
+#: `src/storyforge/_resources/config`（不存在 → 回落仓库根），
+#: 安装态为 `site-packages/storyforge/_resources/config`（force-include 打入，命中）。
+#: ⚠️ 首版曾错写成 `parents[1]` —— 那是包的**上級目录**（src / site-packages），
+#: 隔离安装验收当场抓出（config_dir 落回 `<venv>\Lib\config` 旧病灶）。
+#: 提成模块常量正是为了让这个 off-by-one 能被单测钉死。
+_PACKAGE_CONFIG_DIR = Path(__file__).resolve().parent / "_resources" / "config"
+
+
+def resolve_config_dir(
+    env_value: str | None = None,
+    package_dir: Path | None = None,
+    repo_dir: Path | None = None,
+) -> Path:
+    r"""config 目录解析（每次调用现算，**不做 import 期冻结**）。
+
+    ## 解析顺序（高 → 低）
+
+      1. `STORYFORGE_CONFIG_DIR` 环境变量（空串/纯空白视为未设置）
+      2. 包内 `storyforge/_resources/config` —— 安装态命中：
+         `pyproject.toml` 的 `force-include` 把仓库根 `config/` 打进 wheel
+         （doc/11 方案甲，决策已冻结）；源码树中该目录**不存在**，自动跳过
+      3. `<REPO_ROOT>/config` —— 源码树命中（开发工作流零变化）
+
+    ## 为什么必须是函数而不是模块常量（doc/11 §2.4 陷阱四）
+
+    `DEFAULT_CONFIG_DIR = REPO_ROOT / "config"` 在 **import 期**求值：
+    安装态下它被冻结成 `<venv>\Lib\config`（不存在），
+    运行期改 `STORYFORGE_CONFIG_DIR` 也无法挽救读不到的 providers.toml。
+    因此本函数在**每次调用时**重新解析；`Settings` 的 `config_dir`
+    字段用 `default_factory` 挂接，同样按需求值。
+
+    ## 可注入参数（仅测试使用）
+
+    生产调用一律无参；测试通过 `env_value` / `package_dir` / `repo_dir`
+    模拟"安装态有两个候选"等场景，不必伪造 site-packages。
+    """
+    env = env_value if env_value is not None else os.environ.get("STORYFORGE_CONFIG_DIR")
+    if env and env.strip():
+        return Path(env)
+    pkg = package_dir if package_dir is not None else _PACKAGE_CONFIG_DIR
+    if pkg.exists():
+        return pkg
+    return repo_dir if repo_dir is not None else REPO_ROOT / "config"
+
+
+def resolve_data_dir() -> Path:
+    """data 目录解析（函数形式，去 import 期冻结）。
+
+    当前仍解析为 `<REPO_ROOT>/data`（源码树语义，开发机 `data/` 不动）。
+    ★ PG-1B 将在此加入"仅安装态切 `%APPDATA%`"分支（doc/11 §4.2 硬约束：
+    无条件切换会移动开发机数据并破坏既有测试的默认路径假设）——本阶段**不动**。
+    """
+    return REPO_ROOT / "data"
 
 
 # --------------------------------------------------------------------------- #
@@ -408,7 +468,7 @@ class Settings(BaseSettings):
         """
         from pydantic_settings import TomlConfigSettingsSource
 
-        toml_path = DEFAULT_CONFIG_DIR / "settings.toml"
+        toml_path = resolve_config_dir() / "settings.toml"
         if not toml_path.exists():
             return (init_settings, env_settings, dotenv_settings, file_secret_settings)
         return (
@@ -420,8 +480,10 @@ class Settings(BaseSettings):
         )
 
     app_name: str = "storyforge"
-    data_dir: Path = DEFAULT_DATA_DIR
-    config_dir: Path = DEFAULT_CONFIG_DIR
+    #: ★ `default_factory` 按需解析（doc/11 §2.4）：旧写法 `= DEFAULT_CONFIG_DIR`
+    #: 在 import 期冻结，安装态下指向不存在的 `<venv>\Lib\config`。
+    data_dir: Path = Field(default_factory=resolve_data_dir)
+    config_dir: Path = Field(default_factory=resolve_config_dir)
 
     #: 当前默认模式（story/learn）。
     #:
@@ -486,6 +548,24 @@ def resolve_secret(env_name: str) -> str | None:
 #: "在子目录里跑脚本"时仍能找到。
 def dotenv_paths() -> list[Path]:
     return [REPO_ROOT / ".env"]
+
+
+def python_child_env() -> dict[str, str]:
+    """给 **Python 子进程**的环境：确保其 stdio 按 UTF-8 编解码。
+
+    ## 为什么存在（2026-09-26 PG-1A 期间实测炸出）
+
+    Windows 控制台默认 GBK。管道模式下，Python 子进程按自己的
+    `PYTHONIOENCODING` 编码输出，父进程 `subprocess.run(text=True)`
+    却按系统区域解码 —— 项目规约要求"跑命令前设 `PYTHONIOENCODING=utf-8`"，
+    于是子进程写 UTF-8、父进程按 GBK 读，输出里一有中文就
+    `UnicodeDecodeError`（`arch-check` 实测在 0xa3 处踩中）。
+
+    本函数把父子两侧**都钉死 UTF-8**，与调用方控制台无关。
+    本模块是契约规则 12 允许直读 `os.environ` 的唯一例外处，
+    因此该构造放在这里而不是各调用点散落复制。
+    """
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 
 def load_dotenv(*, override: bool = False) -> list[str]:
@@ -603,8 +683,9 @@ def reset_settings() -> None:
 
 __all__ = [
     "REPO_ROOT",
-    "DEFAULT_CONFIG_DIR",
-    "DEFAULT_DATA_DIR",
+    "resolve_config_dir",
+    "resolve_data_dir",
+    "python_child_env",
     "dotenv_paths",
     "load_dotenv",
     "LLMSettings",

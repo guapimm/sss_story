@@ -141,3 +141,16 @@ def test_env_is_gitignored() -> None:
     gi = (cfg.REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert ".env" in gi
     assert "!.env.example" in gi, "模板文件必须显式放行"
+
+
+def test_python_child_env_pins_utf8(monkeypatch) -> None:
+    """★ 子进程环境必须钉死 UTF-8（arch-check 曾因此在 GBK 下炸 UnicodeDecodeError）。
+
+    双向：`PYTHONIOENCODING` 必须被强制为 utf-8（即使调用方设了别的值）；
+    同时其余环境变量必须原样透传（子进程还要靠它们找到 API key 等）。
+    """
+    monkeypatch.setenv("PYTHONIOENCODING", "gbk")
+    monkeypatch.setenv("SF_CHILD_ENV_PROBE", "1")
+    env = cfg.python_child_env()
+    assert env["PYTHONIOENCODING"] == "utf-8", "子进程编码没被钉死 —— GBK 下会再次炸掉"
+    assert env["SF_CHILD_ENV_PROBE"] == "1", "环境变量没有透传给子进程"
