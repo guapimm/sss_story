@@ -393,6 +393,55 @@ def _artifacts():
     return ArtifactStore.from_settings()
 
 
+def _register_book(*, book_id: int, topic: str, genre: str,
+                   target_chapters: int | None = None) -> None:
+    """把书登记进 `books` 表 —— **FK 根，必须先于任何子表写入存在**。
+
+    ★ 为什么必须有这一步（S0 真实取证暴露的缺陷）：
+    `entities.book_id` / `entity_relations.book_id` / `injuries.book_id`
+    都有 `FOREIGN KEY -> books.id`，而 `books` 行**全仓没有任何生产写入点** ——
+    `BookRepository.upsert()` 写好了，却只在测试里被调用。
+
+    后果（实测）：S0 单章跑通、正文 4484 字已落盘，但实体/关系入库抛
+    `IntegrityError: FOREIGN KEY constraint failed`，**抽取产物一条没进 DB**。
+    这正是本项目反复出现的"设计了但没接线"同型缺陷。
+
+    数据库不可用时**不阻断**（产物在盘上，写作本身不依赖 DB），
+    但会打印一行说明，绝不静默降级。
+    """
+    try:
+        from storyforge.infra.storage.db import Database
+        from storyforge.infra.storage.repositories import BookRepository
+
+        db = Database.open(get_settings().db_path)
+        BookRepository(db).upsert(
+            book_id=book_id, topic=topic, genre=genre,
+            target_chapters=target_chapters or 400,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"（提示：书籍未登记（{type(exc).__name__}: {exc}），"
+              f"实体/关系**无法入库**（FK 根缺失））", file=sys.stderr)
+
+
+def _book_topic_from_store(store: Any, book_id: int) -> str:
+    """从盘上已生成的世界观圣经反推主题（`write` 没有 `--topic` 参数）。
+
+    圣经首行由 `plan` 写成 `# <topic>`（见 `bible_architect`），
+    读不到时返回空串，由调用方兜底 —— 不编造主题。
+    """
+    try:
+        head = (store.read_text(f"books/{book_id}/bible.md") or "").lstrip()
+    except Exception:  # noqa: BLE001
+        return ""
+    for line in head.splitlines():
+        line = line.strip()
+        if line.startswith("# "):
+            return line[2:].strip()[:200]
+        if line:
+            break
+    return ""
+
+
 def _graph_deps(*, client: Any = None) -> Any:
     """构造 `GraphDeps` 并**接上仓储**（0-7 的生产接线点）。
 
@@ -461,6 +510,9 @@ async def _run_plan(args: argparse.Namespace, client: Any = None) -> int:
     # ★ 默认自己造；`cmd_plan` 传入自己那份，好让**预算状态与调用记录
     #   在 `_run_plan` 返回后仍可读**（否则摘要拿到的是空记录）。
     client = client if client is not None else _make_client(args)
+    # ★ FK 根先落库：entities/relations/injuries 都指向 books.id
+    _register_book(book_id=args.book_id, topic=args.topic, genre=args.genre,
+                   target_chapters=args.book_chapters)
     # ★ 0-7：经 `_graph_deps()` 接线仓储（伤势恢复链路的 ③ 环）
     deps = _graph_deps(client=client)
     s = get_settings()
@@ -614,6 +666,17 @@ async def _run_write(args: argparse.Namespace, client: Any = None) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"（提示：实体/关系仓储未接线（{type(exc).__name__}: {exc}），"
               f"本章抽取结果**不入库**）", file=sys.stderr)
+
+    # ★ FK 根：`entities` / `entity_relations` 都指向 `books.id`。
+    #   即使 `plan` 时已登记，这里也**幂等**再 upsert 一次 ——
+    #   否则对"产物在盘上但 DB 无行"的既有书直接 write，仍会整批 FK 失败。
+    #   `upsert` 已存在时只更新非空字段、**不重置进度**，重复调用安全。
+    #
+    #   topic/genre 从盘上**已生成的圣经**反推（write 没有这两个参数）：
+    #   圣经首行是"# <标题>"，标题由 plan 用 topic 写入。
+    _register_book(book_id=args.book_id,
+                   topic=_book_topic_from_store(store, args.book_id) or f"book {args.book_id}",
+                   genre="")
 
     deps = ChapterDeps(client=client, store=store,
                        entities=entities, relations=relations)

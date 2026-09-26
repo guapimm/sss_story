@@ -395,3 +395,109 @@ async def test_commit_node_without_repos_says_so(tmp_repo, book_id) -> None:
 
     assert "未注入仓储" in out.get("commit_note", "")
     assert out.get("persisted") is None      # 不得谎报已入库
+
+
+# --------------------------------------------------------------------------- #
+# ★ FK 根（`books` 行）—— S0 真实取证暴露的缺陷
+# --------------------------------------------------------------------------- #
+
+
+def test_entity_insert_fails_without_books_row(db, entities, relations) -> None:
+    """★ 复现缺陷本体：`books` 行不存在时，实体入库必然 FK 失败。
+
+    为什么值得单独钉：本文件所有其它测试都通过 `book_id` fixture
+    先 `books.upsert(...)`，于是**这个前提被测试自己满足了**，
+    生产里却没人做 —— 缺陷因此在测试全绿的情况下存活到 S0 真实取证。
+
+    这正是"测试夹具替被测代码做了它该做的事"这一类盲区。
+    """
+    import sqlalchemy.exc
+
+    from storyforge.graph.nodes.persist import persist_extraction
+
+    out = _Out(mentions=["沈砚"], links={}, new_canonical={"沈砚": "沈砚"})
+    with pytest.raises(sqlalchemy.exc.IntegrityError):
+        persist_extraction(
+            entities=out, relations=None,
+            book_id=424242,          # 故意不建 books 行
+            chapter_no=1,
+            entity_repo=entities, relation_repo=relations,
+        )
+
+
+def test_cli_register_book_creates_the_fk_root(db, tmp_settings) -> None:
+    """★ `_register_book` 必须真的建出 `books` 行 —— 它是 FK 根。
+
+    这是 S0 取证后加的接线：`BookRepository.upsert()` 此前**零生产调用点**，
+    导致"正文 4484 字落盘成功、实体/关系一条没进 DB"。
+
+    直接调 `_register_book`（而不是绕开它调仓储）—— 否则测的是仓储本身，
+    接线再断掉也不会变红。`db` 夹具负责建表。
+    """
+    import sqlite3
+
+    from storyforge.cli import _register_book
+
+    _register_book(book_id=5150, topic="值夜手册",
+                   genre="suspense", target_chapters=400)
+
+    con = sqlite3.connect(tmp_settings.db_path)
+    row = con.execute(
+        "SELECT id, topic, genre, mode FROM books WHERE id=5150"
+    ).fetchone()
+    assert row is not None, "`_register_book` 没有建出 books 行 —— FK 根缺失"
+    assert row[0] == 5150 and row[1] == "值夜手册"
+    assert row[2] == "suspense" and row[3] == "story"
+
+
+def test_register_book_is_idempotent_and_keeps_progress(db, tmp_settings) -> None:
+    """重复登记**不重置进度** —— `write` 每章都会调它一次。"""
+    import sqlite3
+
+    from storyforge.cli import _register_book
+
+    _register_book(book_id=5151, topic="书", genre="g")
+    con = sqlite3.connect(tmp_settings.db_path)
+    con.execute("UPDATE books SET current_chapter=7 WHERE id=5151")
+    con.commit()
+
+    _register_book(book_id=5151, topic="书", genre="g")   # 再来一次
+    assert con.execute(
+        "SELECT current_chapter FROM books WHERE id=5151"
+    ).fetchone()[0] == 7, "重复登记把进度重置了"
+
+
+def test_book_topic_recovers_from_bible_head(tmp_repo) -> None:
+    """`write` 没有 `--topic`，从盘上圣经首行反推 —— 读不到就返回空串，不编造。"""
+    from storyforge.cli import _book_topic_from_store
+    from storyforge.infra.storage.artifacts import ArtifactStore
+
+    store = ArtifactStore(tmp_repo)
+    assert _book_topic_from_store(store, 4242) == "", "不存在的书应返回空串"
+
+    store.write_text("books/4242/bible.md", "# 值夜手册\n\n正文…")
+    assert _book_topic_from_store(store, 4242) == "值夜手册"
+
+
+def test_register_book_reports_failure_instead_of_silently_degrading(
+    monkeypatch, capsys
+) -> None:
+    """★ 登记失败必须**留下说明**，不得静默降级。
+
+    这条防的是"把失败吞掉、事后完全看不出来"。它与 `_graph_deps` 的
+    伤势仓储、`_run_write` 的实体仓储是同一纪律：DB 不可用**不阻断**运行，
+    但必须**说出来** —— 否则"实体一条没进库"要等到读数据时才发现。
+    """
+    from storyforge.infra.storage.db import Database
+    from storyforge.cli import _register_book
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(Database, "open", staticmethod(_boom))
+
+    _register_book(book_id=5152, topic="书", genre="g")   # 不得抛异常
+
+    err = capsys.readouterr().err
+    assert "书籍未登记" in err, "登记失败被静默吞掉了 —— 没有留下任何说明"
+    assert "无法入库" in err, "说明里没有点出后果（FK 根缺失）"
