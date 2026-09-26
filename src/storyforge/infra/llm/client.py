@@ -508,7 +508,13 @@ class LLMClient:
                 usage.reasoning_tokens, prompt_chars,
             )
             if self.budget_stopped:
-                raise LLMError(f"budget stopped: {self.budget_stop_reason}")
+                # 空输出没有"已付费的正文"可交付，停机是对的。
+                # 但要**带上空输出的诊断**（finish_reason / reasoning 占比），
+                # 否则只剩一句"budget stopped"，看不出这次为什么是空的。
+                raise LLMError(
+                    f"budget stopped: {self.budget_stop_reason}；"
+                    f"本次为空输出：{blank_error}"
+                )
             return None, blank_error
 
         self.records.append(self._record(
@@ -522,7 +528,22 @@ class LLMClient:
             },
         ))
         if self.budget_stopped:
-            raise LLMError(f"budget stopped: {self.budget_stop_reason}")
+            # ★ 越线的那次响应**照常交付并缓存**，只停掉**后续**请求。
+            #
+            # 为什么不在这里抛异常：这次响应**已经付费了**（`observe_usage`
+            # 已经把它记进账），丢弃它等于「钱花了、稿子扔了」—— 而且还
+            # 没写进幂等缓存，重跑会**为同一份内容再付一次**。
+            #
+            # 与负责人拍板的语义一致：**最后一次请求可能越线**，含义是
+            # 那次的产物照常使用，然后停机。
+            #
+            # 停机的执行点在 `reserve_attempt()`：它是下一次调用进入
+            # provider 之前的必过关卡，会带着 `budget_stop_reason` 抛错。
+            # 因此"交付当前 + 拒绝后续"是自动成立的，不需要在这里拦。
+            logger.warning(
+                "budget crossed but response delivered: node=%s cost=%s reason=%s",
+                ctx.node, f"{self.configured_credits:.4f}", self.budget_stop_reason,
+            )
         if ctx.idempotency_key and cache_result:
             self.idempotency.put(ctx.idempotency_key, text)
         return CallResult(text, self.records[-1], model.id, provider.name), None

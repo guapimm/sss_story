@@ -850,17 +850,52 @@ async def test_budget_idempotency_hit_does_not_count_provider_request() -> None:
 
 
 async def test_budget_credits_can_cross_only_on_last_request_and_then_stop() -> None:
+    """★★ 越线那次的正文**照常交付并缓存**，只停掉后续请求。
+
+    旧版这条测试断言"越线时抛 LLMError"，那是**错的** —— 它把缺陷钉成了
+    正确行为。越线的那次响应**已经付费**（`observe_usage` 已记账），
+    丢掉它等于「钱花了、稿子扔了」，而且还**没进幂等缓存**，重跑要为
+    同一份内容再付一次。
+
+    与负责人拍板的语义一致：「最后一次请求可能越线」= 那次的产物正常使用，
+    然后停机。停机的执行点在 `reserve_attempt()`（下一次调用的必过关卡）。
+    """
     client, transport = make_client([("ok", {
         "prompt_tokens": 1000, "completion_tokens": 500,
     })], config=ClientConfig(max_attempts=1, backoff_base_s=0.0,
                              max_provider_requests=3, max_configured_credits=0.1))
-    with pytest.raises(LLMError, match="configured Credits.*exceeded.*may cross"):
-        await client.complete(node="chapter_writer", system="s", user="u")
+
+    # ① 越线的那次：正文必须拿到，不能丢
+    result = await client.complete(node="chapter_writer", system="s", user="u")
+    assert result.text == "ok", "越线那次的正文被丢弃了（付费产物不该丢）"
     assert len(transport.calls) == client.provider_attempts == 1
     assert client.configured_credits > 0.1
     assert client.budget_stopped
+
+    # ② 后续请求被拒（停机执行点在 reserve_attempt）
     with pytest.raises(LLMError, match="budget stopped"):
         await client.complete(node="chapter_writer", system="s", user="u")
+    assert len(transport.calls) == 1, "停机后不得再发起 provider 请求"
+
+
+async def test_budget_crossed_response_is_cached_so_rerun_does_not_repay() -> None:
+    """★ 越线那次的正文必须进幂等缓存 —— 否则重跑为同一份内容**再付一次**。
+
+    这是"丢弃缺陷"最贵的后果：不只是这一次白花钱，而是**每次重试都白花**。
+    """
+    client, transport = make_client([("paid-prose", {
+        "prompt_tokens": 1000, "completion_tokens": 500,
+    })], config=ClientConfig(max_attempts=1, backoff_base_s=0.0,
+                             max_provider_requests=3, max_configured_credits=0.1))
+    key = "b1:chapter:1"
+    ctx = CallContext(node="chapter_writer", idempotency_key=key)
+
+    first = await client.complete(node="chapter_writer", system="s", user="u",
+                                  context=ctx)
+    assert first.text == "paid-prose"
+    assert client.idempotency.get(key) == "paid-prose", (
+        "越线那次的正文没进缓存 —— 重跑会为同一份内容再付一次"
+    )
     assert len(transport.calls) == 1
 
 
