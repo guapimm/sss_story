@@ -22,8 +22,9 @@ $ErrorActionPreference = 'Continue'
 $root = if ($env:ORCA_WORKTREE_PATH) { $env:ORCA_WORKTREE_PATH } else { Split-Path -Parent $PSScriptRoot }
 Set-Location $root
 
-$drive = [IO.Path]::GetPathRoot($root)
-$cacheRoot = Join-Path $drive 'orca\caches'
+# 缓存必须放 worktree 内部：executor(DSH/OpenCode) 沙箱只保证可写 worktree，
+# 写数据盘共享缓存会被拒（2026-10-20 实测）。
+$cacheRoot = Join-Path $root '.caches'
 $env:UV_CACHE_DIR = Join-Path $cacheRoot 'uv'
 $env:PYTHONDONTWRITEBYTECODE = '1'
 New-Item -ItemType Directory -Force -Path (Join-Path $cacheRoot 'pytest') | Out-Null
