@@ -22,3 +22,14 @@
   文件多大按**职责内聚**决定，不设阈值、不触发拆分。
 - 真要拆时，必须能说清**拆完降低了哪一处耦合**；说不清就别拆。
 - 详见 [`doc/07-工作方式与目标导向.md`](doc/07-工作方式与目标导向.md) §2.1.1。
+
+## 多 Agent 流水线附加约定（pipeline/onboarding 引入）
+
+> 本节只追加，不修改上文项目原有约束（模型分工、额度、重置卡、记忆写入等纪律全部继续有效）。
+
+- 工作树/分支：任务在独立 worktree（数据盘 `E:\orca\workspaces\...`）执行；分支 `impl/<REQ-ID>/<taskId>-<employee>`；不直接改 `rabbit`/`main`。
+- 执行者边界：只写任务合同 `allowedPaths`；禁改 `tests/`、`pyproject.toml`、`uv.lock`、`AGENTS.md`、`requirements/`、CI 配置；共享文件改动先回主机器。
+- 验收入口：`powershell -File scripts\acceptance.ps1 -Mode quick`（doctor + arch-check）；全量用 `-Mode full`（长套件，basetemp 在数据盘）。
+- 证据：测试日志/退出码/差异写 `.harness/evidence/<REQ-ID>/<taskId>/`；worker 自报不算通过，验收方独立复跑。
+- 记忆：开工前查 Hindsight，阶段完成按上文要求显式 `ingest_document`；不把测试临时目录、密钥、小说正文写入记忆。
+- 红线：不自动发起真实云端/收费调用；不使用 Codex 重置卡；真实调用需负责人当次明确授权。

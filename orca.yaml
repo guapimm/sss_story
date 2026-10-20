@@ -1,0 +1,14 @@
+# Orca 仓库配置（pipeline/onboarding 分支新增）
+# 规则：worktree / run workspace 必须放在数据盘，不放 C 盘；具体根目录由 Orca per-repo worktreeBasePath 决定。
+# 环境变量由 Orca 注入：ORCA_ROOT_PATH（主 checkout）、ORCA_WORKTREE_PATH（新 worktree）、ORCA_WORKSPACE_NAME。
+scripts:
+  setup: scripts/orca-setup.ps1
+  archive: scripts/orca-archive.ps1
+
+# agent 等 setup 完成再启动，避免拿到半装好的环境
+setupAgentStartupPolicy: wait-for-setup
+
+# 不共享构建产物：src-tauri/target、dist 体积大且会造成锁文件/缓存串味；
+# Rust 构建请用 CARGO_TARGET_DIR 指向数据盘缓存（见 scripts/orca-setup.ps1）。
+worktree:
+  sharedDirectories: []
