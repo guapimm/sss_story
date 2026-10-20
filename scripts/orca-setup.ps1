@@ -15,8 +15,9 @@ if (-not (Test-Path $wt)) { throw "worktree 不存在: $wt" }
 Set-Location $wt
 
 # 按 worktree 所在盘派生缓存根：E:\... -> E:\orca\caches
-$drive = [IO.Path]::GetPathRoot($wt)                    # 形如 "E:\"
-$cacheRoot = Join-Path $drive 'orca\caches'
+# 缓存必须放 worktree 内部：executor(DSH/OpenCode) 的沙箱只保证可写 worktree；
+# 写数据盘共享缓存会被拒绝（2026-10-20 实测：uv 缓存 E:\orca\caches 访问被拒）。
+$cacheRoot = Join-Path $wt '.caches'
 $env:UV_CACHE_DIR = Join-Path $cacheRoot 'uv'
 $env:npm_config_cache = Join-Path $cacheRoot 'npm'
 $env:CARGO_TARGET_DIR = Join-Path $cacheRoot 'cargo\story_commandcode'

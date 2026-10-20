@@ -3,8 +3,8 @@
   story_commandcode 验收统一入口（源码级）。
 .DESCRIPTION
   - quick   ：doctor + arch-check（约 1 分钟）
-  - full    ：quick + 全量 pytest（长套件，约 70 分钟；basetemp 放数据盘，避免测试写仓库）
-  - contract：只跑 tests/contract 契约测试（basetemp 放数据盘，不跑 doctor/arch-check）
+  - full    ：quick + 全量 pytest（长套件，约 70 分钟；basetemp 放 worktree 内 .caches，避免测试写仓库）
+  - contract：只跑 tests/contract 契约测试（basetemp 放 worktree 内 .caches，不跑 doctor/arch-check）
   - 结果写入 .harness/acceptance/<timestamp>.json；任何一步非 0 时脚本以非 0 退出
 .EXAMPLE
   powershell -File scripts\acceptance.ps1 -Mode quick

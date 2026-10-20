@@ -19,7 +19,7 @@ if (Test-Path $pidFile) {
 }
 
 # 2) 清理可再生产物（保留 data/ 与 .harness/evidence/）
-foreach ($p in @('.venv', 'node_modules', 'task.env', '.pytest_cache')) {
+foreach ($p in @('.venv', 'node_modules', '.caches', 'task.env', '.pytest_cache')) {
   if (Test-Path $p) { Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue; Write-Host "[orca-archive] removed $p" }
 }
 

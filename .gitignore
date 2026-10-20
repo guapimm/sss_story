@@ -66,3 +66,4 @@ doc/_commit*.txt
 .harness/acceptance/
 task.env
 .opencode/node_modules/
+.caches/
