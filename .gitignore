@@ -60,3 +60,10 @@ wangwenxiaoshuo/
 *.log
 # 提交信息临时文件（PowerShell 内联 -m 会吃掉中文括号，故走 git commit -F 文件）
 doc/_commit*.txt
+
+# 多 Agent 流水线（pipeline/onboarding）
+.pytest_*/
+.harness/acceptance/
+task.env
+.opencode/node_modules/
+.caches/

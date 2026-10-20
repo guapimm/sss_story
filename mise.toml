@@ -1,0 +1,10 @@
+# 工具链版本钉（仓库级；不改全局环境）
+# 依据：本机 .venv=CPython 3.13.12、uv 0.12.5、node v24.18.0、rustc 1.96.0（2026-10-20 实测）
+# Rust/Tauri 壳只有在需要构建安装包时才用；不放进 mise 默认，避免影响纯 Python 开发。
+[tools]
+python = "3.13"
+uv = "0.12.5"
+node = "24.18.0"
+
+[env]
+PYTHONDONTWRITEBYTECODE = "1"
