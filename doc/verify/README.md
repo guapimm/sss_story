@@ -9,13 +9,16 @@
 
 ---
 
-## 1. 三个验收入口
+## 1. 验收入口
 
 统一入口是 `scripts\acceptance.ps1`，模式由 `-Mode` 指定，默认 `quick`：
 
 ```powershell
 # 快速：doctor + arch-check（默认模式）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\acceptance.ps1 -Mode quick
+
+# 执行器自证：只跑 doctor（沙箱安全，不跑 arch-check）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\acceptance.ps1 -Mode worker
 
 # 契约：只跑 tests/contract，不跑 doctor/arch-check
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\acceptance.ps1 -Mode contract
@@ -27,11 +30,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\acceptance.ps1 -Mode
 | 模式 | 实际执行内容 | 耗时量级 | 典型用途 |
 |---|---|---|---|
 | `quick` | `doctor` + `arch-check` | 约 1 分钟 | 每次改动后、提交前；确认环境、配置、存储和架构契约没有基本回归 |
+| `worker` | 只跑 `doctor` | 秒级 | 执行器在受限沙箱内自证；完整验收仍用 `quick`/`full` |
 | `contract` | 只跑 `tests/contract`（契约/架构不变量） | 分钟级，通常明显短于 `full` | 只改契约相关逻辑时的快速回归；**不覆盖** `doctor` |
 | `full` | `quick` 的全部内容 + 全量 `pytest` | 约 70 分钟（长套件） | 合并/交付前的完整源码级回归 |
 
 补充说明：
 
+- `worker` 只跑 `doctor`，供执行器在受限沙箱内自证；它不跑 `arch-check`/pytest，**不能替代** `quick`/`full` 的完整验收。
 - 脚本根目录优先取 `$env:ORCA_WORKTREE_PATH`，未设置时取 `scripts\` 的父目录；所有检查都在该根目录下执行。
 - 检查命令统一通过 `uv run --extra dev` 运行，因此依赖版本以 `uv.lock` 为准，且必须带 `dev` extra（见 §6.2）。
 - `doctor` 是自检（配置 / 存储 / 外键 / 能力声明 / 分层纪律等）；`arch-check` 内部会再启动一次
@@ -110,7 +115,7 @@ orca setup/archive 的执行器缓存统一在 **worktree 内 `.caches`**：`uv`
 | 字段 | 含义 |
 |---|---|
 | `schemaVersion` | 报告格式版本，当前 `storyforge.acceptance/1` |
-| `mode` | `quick` / `contract` / `full` |
+| `mode` | `quick` / `worker` / `contract` / `full` |
 | `taskId` | 调用方传入的任务 ID，默认 `manual` |
 | `root` | 运行验收的仓库/worktree 根目录 |
 | `head` | 报告生成时的 `git rev-parse HEAD` |

@@ -3,17 +3,19 @@
   story_commandcode 验收统一入口（源码级）。
 .DESCRIPTION
   - quick   ：doctor + arch-check（约 1 分钟）
+  - worker  ：只跑 doctor（执行器在受限沙箱内自证；不跑 arch-check，完整验收仍用 quick/full）
   - full    ：quick + 全量 pytest（长套件，约 70 分钟；basetemp 放 worktree 内 .caches，避免测试写仓库）
   - contract：只跑 tests/contract 契约测试（basetemp 放 worktree 内 .caches，不跑 doctor/arch-check）
   - 结果写入 .harness/acceptance/<timestamp>.json；任何一步非 0 时脚本以非 0 退出
 .EXAMPLE
   powershell -File scripts\acceptance.ps1 -Mode quick
+  powershell -File scripts\acceptance.ps1 -Mode worker
   powershell -File scripts\acceptance.ps1 -Mode full
   powershell -File scripts\acceptance.ps1 -Mode contract
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('quick','full','contract')]
+  [ValidateSet('quick','full','contract','worker')]
   [string]$Mode = 'quick',
   [string]$TaskId = 'manual'
 )
@@ -68,14 +70,17 @@ function Invoke-Check {
 $codes = @()
 if ($Mode -ne 'contract') {
   $codes += Invoke-Check 'doctor'    'uv' @('run','--extra','dev','python','-m','storyforge.cli','doctor') 300
-  # arch-check 内部另起 pytest；把 basetemp 也放数据盘，避开仓库内陈旧的 .pytest_tmp。
-  # 仅对 arch-check 子进程生效：保存并在之后恢复（原本不存在则移除），不泄漏到 full/contract。
-  $prevAddOpts = $env:PYTEST_ADDOPTS
-  try {
-    $env:PYTEST_ADDOPTS = "-p no:cacheprovider --basetemp=" + ((Join-Path $cacheRoot ("pytest\story-arch-{0}" -f $stamp)) -replace '\\','/')
-    $codes += Invoke-Check 'arch-check' 'uv' @('run','--extra','dev','python','-m','storyforge.cli','arch-check') 600
-  } finally {
-    if ($null -eq $prevAddOpts) { Remove-Item Env:PYTEST_ADDOPTS -ErrorAction SilentlyContinue } else { $env:PYTEST_ADDOPTS = $prevAddOpts }
+  # worker 只做执行器沙箱内的 doctor 自证，arch-check 留给 quick/full 的完整验收。
+  if ($Mode -ne 'worker') {
+    # arch-check 内部另起 pytest；把 basetemp 也放数据盘，避开仓库内陈旧的 .pytest_tmp。
+    # 仅对 arch-check 子进程生效：保存并在之后恢复（原本不存在则移除），不泄漏到 full/contract。
+    $prevAddOpts = $env:PYTEST_ADDOPTS
+    try {
+      $env:PYTEST_ADDOPTS = "-p no:cacheprovider --basetemp=" + ((Join-Path $cacheRoot ("pytest\story-arch-{0}" -f $stamp)) -replace '\\','/')
+      $codes += Invoke-Check 'arch-check' 'uv' @('run','--extra','dev','python','-m','storyforge.cli','arch-check') 600
+    } finally {
+      if ($null -eq $prevAddOpts) { Remove-Item Env:PYTEST_ADDOPTS -ErrorAction SilentlyContinue } else { $env:PYTEST_ADDOPTS = $prevAddOpts }
+    }
   }
 }
 if ($Mode -eq 'full') {
