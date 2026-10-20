@@ -1,0 +1,5 @@
+﻿ M scripts/acceptance.ps1
+?? TASK.md
+?? plans/
+?? requirements/REQ-20261020-pilot/
+

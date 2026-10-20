@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "team.task/1",
+  "reqId": "REQ-20261020-pilot",
+  "taskId": "acceptance-contract",
+  "title": "给 acceptance.ps1 增加 contract 模式",
+  "workerBackend": "dsh",
+  "allowedPaths": ["scripts/acceptance.ps1"],
+  "forbiddenPaths": ["tests/**", "pyproject.toml", "uv.lock", "scripts/orca-setup.ps1", "scripts/orca-archive.ps1"],
+  "acceptance": [
+    "scripts/acceptance.ps1 -Mode contract 退出码 0 且报告 mode=contract",
+    "scripts/acceptance.ps1 -Mode quick 退出码 0",
+    "git diff --name-only 只包含 scripts/acceptance.ps1"
+  ],
+  "tests": [
+    { "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts\\acceptance.ps1", "-Mode", "contract"] },
+    { "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts\\acceptance.ps1", "-Mode", "quick"] }
+  ]
+}

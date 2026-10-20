@@ -2,22 +2,24 @@
 .SYNOPSIS
   story_commandcode 验收统一入口（源码级）。
 .DESCRIPTION
-  - quick：doctor + arch-check（约 1 分钟）
-  - full ：quick + 全量 pytest（长套件，约 70 分钟；basetemp 放数据盘，避免测试写仓库）
+  - quick   ：doctor + arch-check（约 1 分钟）
+  - full    ：quick + 全量 pytest（长套件，约 70 分钟；basetemp 放数据盘，避免测试写仓库）
+  - contract：只跑 tests/contract 契约测试（basetemp 放数据盘，不跑 doctor/arch-check）
   - 结果写入 .harness/acceptance/<timestamp>.json；任何一步非 0 时脚本以非 0 退出
 .EXAMPLE
   powershell -File scripts\acceptance.ps1 -Mode quick
   powershell -File scripts\acceptance.ps1 -Mode full
+  powershell -File scripts\acceptance.ps1 -Mode contract
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('quick','full')]
+  [ValidateSet('quick','full','contract')]
   [string]$Mode = 'quick',
   [string]$TaskId = 'manual'
 )
 
 $ErrorActionPreference = 'Continue'
-$root = if ($env:ORCA_WORKTREE_PATH) { $env:ORCA_WORKTREE_PATH } else { (Get-Location).Path }
+$root = if ($env:ORCA_WORKTREE_PATH) { $env:ORCA_WORKTREE_PATH } else { Split-Path -Parent $PSScriptRoot }
 Set-Location $root
 
 $drive = [IO.Path]::GetPathRoot($root)
@@ -63,11 +65,25 @@ function Invoke-Check {
 
 "mode=$Mode task=$TaskId root=$root" | Write-Host
 $codes = @()
-$codes += Invoke-Check 'doctor'    'uv' @('run','--extra','dev','python','-m','storyforge.cli','doctor') 300
-$codes += Invoke-Check 'arch-check' 'uv' @('run','--extra','dev','python','-m','storyforge.cli','arch-check') 600
+if ($Mode -ne 'contract') {
+  $codes += Invoke-Check 'doctor'    'uv' @('run','--extra','dev','python','-m','storyforge.cli','doctor') 300
+  # arch-check 内部另起 pytest；把 basetemp 也放数据盘，避开仓库内陈旧的 .pytest_tmp。
+  # 仅对 arch-check 子进程生效：保存并在之后恢复（原本不存在则移除），不泄漏到 full/contract。
+  $prevAddOpts = $env:PYTEST_ADDOPTS
+  try {
+    $env:PYTEST_ADDOPTS = "-p no:cacheprovider --basetemp=" + ((Join-Path $cacheRoot ("pytest\story-arch-{0}" -f $stamp)) -replace '\\','/')
+    $codes += Invoke-Check 'arch-check' 'uv' @('run','--extra','dev','python','-m','storyforge.cli','arch-check') 600
+  } finally {
+    if ($null -eq $prevAddOpts) { Remove-Item Env:PYTEST_ADDOPTS -ErrorAction SilentlyContinue } else { $env:PYTEST_ADDOPTS = $prevAddOpts }
+  }
+}
 if ($Mode -eq 'full') {
   $bt = Join-Path $cacheRoot ("pytest\story-{0}" -f $stamp)
   $codes += Invoke-Check 'pytest' 'uv' @('run','--extra','dev','pytest','-p','no:cacheprovider',"--basetemp=$bt") 14400
+}
+elseif ($Mode -eq 'contract') {
+  $bt = Join-Path $cacheRoot ("pytest\story-{0}" -f $stamp)
+  $codes += Invoke-Check 'pytest-contract' 'uv' @('run','--extra','dev','pytest','tests/contract','-p','no:cacheprovider',"--basetemp=$bt") 14400
 }
 
 $allPass = (@($codes | Where-Object { $_ -ne 0 }).Count -eq 0)
